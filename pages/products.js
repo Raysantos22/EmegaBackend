@@ -1,5 +1,5 @@
 // pages/products.js
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useRouter } from 'next/router'
 import Layout from '../components/Layout'
 import ProductCard from '../components/ProductCard'
@@ -18,15 +18,7 @@ export default function Products({ session, supabase }) {
   const [hasMore, setHasMore] = useState(true)
   const router = useRouter()
 
-  useEffect(() => {
-    if (!session) {
-      router.push('/login')
-      return
-    }
-    fetchProducts()
-  }, [session, searchTerm, statusFilter, page])
-
-  const fetchProducts = async () => {
+  const fetchProducts = useCallback(async () => {
     try {
       setLoading(true)
       const params = new URLSearchParams({
@@ -55,7 +47,15 @@ export default function Products({ session, supabase }) {
     } finally {
       setLoading(false)
     }
-  }
+  }, [page, searchTerm, statusFilter])
+
+  useEffect(() => {
+    if (!session) {
+      router.push('/login')
+      return
+    }
+    fetchProducts()
+  }, [session, router, fetchProducts])
 
   const handleSync = async () => {
     setSyncing(true)
