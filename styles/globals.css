@@ -1,3 +1,10 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* OR if you want to use CDN version, add this instead: */
+@import url('https://cdn.tailwindcss.com');
+
 html,
 body {
   padding: 0;
