@@ -1,5 +1,5 @@
 // pages/dashboard.js
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useRouter } from 'next/router'
 import { supabase } from '../lib/supabase' // This is the client-side version
 
@@ -21,21 +21,16 @@ export default function Dashboard() {
     main_picture_url: ''
   })
 
-  useEffect(() => {
-    checkUser()
-    fetchProducts()
-  }, [])
-
-  const checkUser = async () => {
+  const checkUser = useCallback(async () => {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) {
       router.push('/login')
     } else {
       setUser(user)
     }
-  }
+  }, [router])
 
-  const fetchProducts = async () => {
+  const fetchProducts = useCallback(async () => {
     try {
       const { data, error } = await supabase
         .from('products')
@@ -50,7 +45,12 @@ export default function Dashboard() {
     } finally {
       setLoading(false)
     }
-  }
+  }, [])
+
+  useEffect(() => {
+    checkUser()
+    fetchProducts()
+  }, [checkUser, fetchProducts])
 
   const handleSubmit = async (e) => {
     e.preventDefault()
