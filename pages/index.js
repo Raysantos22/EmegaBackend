@@ -1,75 +1,31 @@
-// pages/index.js
-import { useState } from 'react'
-import Head from 'next/head'
+import { useEffect } from 'react'
+import { useRouter } from 'next/router'
+import { useAuth } from '../components/AuthProvider'
 
 export default function Home() {
-  const [syncStatus, setSyncStatus] = useState(null)
-  const [isLoading, setIsLoading] = useState(false)
+  const { user, loading } = useAuth()
+  const router = useRouter()
 
-  const handleSync = async () => {
-    setIsLoading(true)
-    setSyncStatus(null)
-    
-    try {
-      const response = await fetch('/api/sync-products', {
-        method: 'POST'
-      })
-      
-      const result = await response.json()
-      setSyncStatus(result)
-    } catch (error) {
-      setSyncStatus({ error: error.message })
+  useEffect(() => {
+    if (!loading) {
+      if (user) {
+        router.push('/dashboard')
+      } else {
+        router.push('/login')
+      }
     }
-    
-    setIsLoading(false)
+  }, [user, loading, router])
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-indigo-600 mx-auto"></div>
+          <p className="mt-4 text-xl text-gray-600">Loading...</p>
+        </div>
+      </div>
+    )
   }
 
-  return (
-    <div style={{ padding: '20px', fontFamily: 'Arial, sans-serif' }}>
-      <Head>
-        <title>AutoDS to Supabase Sync</title>
-      </Head>
-      
-      <h1>AutoDS to Supabase Product Sync</h1>
-      
-      <div style={{ marginBottom: '20px' }}>
-        <button 
-          onClick={handleSync} 
-          disabled={isLoading}
-          style={{
-            padding: '10px 20px',
-            backgroundColor: isLoading ? '#ccc' : '#0070f3',
-            color: 'white',
-            border: 'none',
-            borderRadius: '5px',
-            cursor: isLoading ? 'not-allowed' : 'pointer'
-          }}
-        >
-          {isLoading ? 'Syncing...' : 'Start Sync'}
-        </button>
-      </div>
-      
-      {syncStatus && (
-        <div style={{
-          padding: '15px',
-          border: '1px solid #ddd',
-          borderRadius: '5px',
-          backgroundColor: syncStatus.error ? '#ffe6e6' : '#e6ffe6'
-        }}>
-          <h3>Sync Result:</h3>
-          <pre>{JSON.stringify(syncStatus, null, 2)}</pre>
-        </div>
-      )}
-      
-      <div style={{ marginTop: '30px' }}>
-        <h2>API Endpoints:</h2>
-        <ul>
-          <li><code>POST /api/sync-products</code> - Sync products from AutoDS</li>
-          <li><code>GET /api/products</code> - Get all products with pagination</li>
-          <li><code>GET /api/products/[id]</code> - Get specific product by AutoDS ID</li>
-          <li><code>GET /api/sync-status</code> - Get sync status and statistics</li>
-        </ul>
-      </div>
-    </div>
-  )
+  return null
 }
