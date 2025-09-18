@@ -1,4 +1,4 @@
-// pages/login.js
+// pages/login.js - Fixed redirect
 import { useState } from 'react'
 import { useRouter } from 'next/router'
 import { supabase } from '../lib/supabase'
@@ -26,7 +26,8 @@ export default function Login() {
       if (isSignUp) {
         alert('Check your email for verification link!')
       } else {
-        router.push('/dashboard')
+        // Fixed: Redirect to homepage (main dashboard) instead of /dashboard
+        router.push('/')
       }
     } catch (error) {
       setError(error.message)

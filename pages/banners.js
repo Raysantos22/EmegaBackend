@@ -1,8 +1,9 @@
-// pages/banners.js - Updated with Navigation Layout
+// pages/banners.js - Updated with Visual Banner Creator
 import { useState, useEffect, useCallback } from 'react'
 import { useRouter } from 'next/router'
 import { supabase } from '../lib/supabase'
 import DashboardLayout from '../components/DashboardLayout'
+import BannerCreator from '../components/BannerCreator'
 
 export default function BannerManagement() {
   const [banners, setBanners] = useState([])
@@ -10,21 +11,8 @@ export default function BannerManagement() {
   const [showModal, setShowModal] = useState(false)
   const [editingBanner, setEditingBanner] = useState(null)
   const [session, setSession] = useState(null)
+  const [submitLoading, setSubmitLoading] = useState(false)
   const router = useRouter()
-
-  // Form state
-  const [formData, setFormData] = useState({
-    title: '',
-    subtitle: '',
-    image_url: '',
-    text_color: 'white',
-    action_type: 'category',
-    action_value: '',
-    is_active: true,
-    display_order: 0,
-    start_date: '',
-    end_date: ''
-  })
 
   const checkUser = useCallback(async () => {
     const { data: { session } } = await supabase.auth.getSession()
@@ -59,25 +47,12 @@ export default function BannerManagement() {
   }, [checkUser, fetchBanners])
 
   const resetForm = () => {
-    setFormData({
-      title: '',
-      subtitle: '',
-      image_url: '',
-      text_color: 'white',
-      action_type: 'category',
-      action_value: '',
-      is_active: true,
-      display_order: 0,
-      start_date: '',
-      end_date: ''
-    })
     setEditingBanner(null)
     setShowModal(false)
   }
 
-  const handleSubmit = async (e) => {
-    e.preventDefault()
-    setLoading(true)
+  const handleSubmit = async (formData) => {
+    setSubmitLoading(true)
 
     try {
       const url = editingBanner ? `/api/banners/${editingBanner.id}` : '/api/banners'
@@ -96,7 +71,14 @@ export default function BannerManagement() {
       if (result.success) {
         resetForm()
         fetchBanners()
-        alert(editingBanner ? 'Banner updated successfully!' : 'Banner created successfully!')
+        // Show success notification
+        const notification = document.createElement('div')
+        notification.className = 'fixed top-4 right-4 bg-green-500 text-white px-6 py-3 rounded-lg shadow-lg z-50'
+        notification.textContent = editingBanner ? 'Banner updated successfully!' : 'Banner created successfully!'
+        document.body.appendChild(notification)
+        setTimeout(() => {
+          document.body.removeChild(notification)
+        }, 3000)
       } else {
         alert('Error saving banner: ' + result.error)
       }
@@ -104,24 +86,12 @@ export default function BannerManagement() {
       console.error('Error saving banner:', error)
       alert('Error saving banner: ' + error.message)
     } finally {
-      setLoading(false)
+      setSubmitLoading(false)
     }
   }
 
   const handleEdit = (banner) => {
     setEditingBanner(banner)
-    setFormData({
-      title: banner.title || '',
-      subtitle: banner.subtitle || '',
-      image_url: banner.image_url || '',
-      text_color: banner.text_color || 'white',
-      action_type: banner.action_type || 'category',
-      action_value: banner.action_value || '',
-      is_active: banner.is_active !== undefined ? banner.is_active : true,
-      display_order: banner.display_order || 0,
-      start_date: banner.start_date ? banner.start_date.split('T')[0] : '',
-      end_date: banner.end_date ? banner.end_date.split('T')[0] : ''
-    })
     setShowModal(true)
   }
 
@@ -137,7 +107,14 @@ export default function BannerManagement() {
 
       if (result.success) {
         fetchBanners()
-        alert('Banner deleted successfully!')
+        // Show success notification
+        const notification = document.createElement('div')
+        notification.className = 'fixed top-4 right-4 bg-red-500 text-white px-6 py-3 rounded-lg shadow-lg z-50'
+        notification.textContent = 'Banner deleted successfully!'
+        document.body.appendChild(notification)
+        setTimeout(() => {
+          document.body.removeChild(notification)
+        }, 3000)
       } else {
         alert('Error deleting banner: ' + result.error)
       }
@@ -163,7 +140,14 @@ export default function BannerManagement() {
 
       if (result.success) {
         fetchBanners()
-        alert(`Banner ${!banner.is_active ? 'activated' : 'deactivated'} successfully!`)
+        // Show success notification
+        const notification = document.createElement('div')
+        notification.className = 'fixed top-4 right-4 bg-blue-500 text-white px-6 py-3 rounded-lg shadow-lg z-50'
+        notification.textContent = `Banner ${!banner.is_active ? 'activated' : 'deactivated'} successfully!`
+        document.body.appendChild(notification)
+        setTimeout(() => {
+          document.body.removeChild(notification)
+        }, 3000)
       } else {
         alert('Error updating banner: ' + result.error)
       }
@@ -186,7 +170,7 @@ export default function BannerManagement() {
     return (
       <DashboardLayout session={session} supabase={supabase} currentPage="banners">
         <div className="flex items-center justify-center h-64">
-          <div className="text-xl">Loading...</div>
+          <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-indigo-600"></div>
         </div>
       </DashboardLayout>
     )
@@ -195,69 +179,88 @@ export default function BannerManagement() {
   return (
     <DashboardLayout session={session} supabase={supabase} currentPage="banners">
       {/* Page Header */}
-      <div className="bg-white shadow rounded-lg mb-6">
+      <div className="bg-white shadow-lg rounded-lg mb-6">
         <div className="px-6 py-4 border-b border-gray-200">
           <div className="flex justify-between items-center">
             <div>
               <h2 className="text-2xl font-bold text-gray-900">Banner Management</h2>
               <p className="text-sm text-gray-600 mt-1">
-                Create and manage promotional banners for your mobile app
+                Create and manage promotional banners for your mobile app with our visual editor
               </p>
             </div>
             <button
               onClick={() => setShowModal(true)}
-              className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-md font-medium transition-colors duration-200"
+              className="bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white px-6 py-3 rounded-lg font-medium transition-all duration-200 shadow-lg hover:shadow-xl flex items-center space-x-2"
             >
-              + Add Banner
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+              </svg>
+              <span>Create Banner</span>
             </button>
           </div>
         </div>
 
-        {/* Stats */}
+        {/* Enhanced Stats */}
         <div className="px-6 py-4">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div className="bg-blue-50 rounded-lg p-4">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+            <div className="bg-gradient-to-r from-blue-50 to-blue-100 rounded-lg p-4 border border-blue-200">
               <div className="flex items-center">
                 <div className="flex-shrink-0">
-                  <div className="w-8 h-8 bg-blue-500 rounded-lg flex items-center justify-center">
-                    <span className="text-white text-sm font-bold">{banners.length}</span>
+                  <div className="w-10 h-10 bg-blue-500 rounded-lg flex items-center justify-center shadow-lg">
+                    <span className="text-white text-lg font-bold">{banners.length}</span>
                   </div>
                 </div>
-                <div className="ml-3">
+                <div className="ml-4">
                   <p className="text-sm font-medium text-blue-900">Total Banners</p>
                   <p className="text-xs text-blue-600">All banners in system</p>
                 </div>
               </div>
             </div>
 
-            <div className="bg-green-50 rounded-lg p-4">
+            <div className="bg-gradient-to-r from-green-50 to-green-100 rounded-lg p-4 border border-green-200">
               <div className="flex items-center">
                 <div className="flex-shrink-0">
-                  <div className="w-8 h-8 bg-green-500 rounded-lg flex items-center justify-center">
-                    <span className="text-white text-sm font-bold">
+                  <div className="w-10 h-10 bg-green-500 rounded-lg flex items-center justify-center shadow-lg">
+                    <span className="text-white text-lg font-bold">
                       {banners.filter(b => b.is_active).length}
                     </span>
                   </div>
                 </div>
-                <div className="ml-3">
+                <div className="ml-4">
                   <p className="text-sm font-medium text-green-900">Active Banners</p>
                   <p className="text-xs text-green-600">Currently displayed</p>
                 </div>
               </div>
             </div>
 
-            <div className="bg-gray-50 rounded-lg p-4">
+            <div className="bg-gradient-to-r from-yellow-50 to-yellow-100 rounded-lg p-4 border border-yellow-200">
               <div className="flex items-center">
                 <div className="flex-shrink-0">
-                  <div className="w-8 h-8 bg-gray-500 rounded-lg flex items-center justify-center">
-                    <span className="text-white text-sm font-bold">
+                  <div className="w-10 h-10 bg-yellow-500 rounded-lg flex items-center justify-center shadow-lg">
+                    <span className="text-white text-lg font-bold">
                       {banners.filter(b => !b.is_active).length}
                     </span>
                   </div>
                 </div>
-                <div className="ml-3">
-                  <p className="text-sm font-medium text-gray-900">Inactive Banners</p>
-                  <p className="text-xs text-gray-600">Not displayed</p>
+                <div className="ml-4">
+                  <p className="text-sm font-medium text-yellow-900">Inactive Banners</p>
+                  <p className="text-xs text-yellow-600">Not displayed</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-gradient-to-r from-purple-50 to-purple-100 rounded-lg p-4 border border-purple-200">
+              <div className="flex items-center">
+                <div className="flex-shrink-0">
+                  <div className="w-10 h-10 bg-purple-500 rounded-lg flex items-center justify-center shadow-lg">
+                    <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
+                    </svg>
+                  </div>
+                </div>
+                <div className="ml-4">
+                  <p className="text-sm font-medium text-purple-900">Performance</p>
+                  <p className="text-xs text-purple-600">Click tracking ready</p>
                 </div>
               </div>
             </div>
@@ -266,47 +269,50 @@ export default function BannerManagement() {
       </div>
 
       {/* Banners Grid */}
-      <div className="bg-white shadow rounded-lg">
+      <div className="bg-white shadow-lg rounded-lg">
         <div className="px-6 py-4">
           {banners.length === 0 ? (
-            <div className="text-center py-12">
-              <div className="mx-auto h-12 w-12 text-gray-400">
+            <div className="text-center py-16">
+              <div className="mx-auto h-24 w-24 text-gray-400 mb-4">
                 <svg fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
                 </svg>
               </div>
-              <h3 className="mt-2 text-sm font-medium text-gray-900">No banners</h3>
-              <p className="mt-1 text-sm text-gray-500">Get started by creating your first banner.</p>
-              <div className="mt-6">
+              <h3 className="mt-2 text-lg font-medium text-gray-900">No banners created yet</h3>
+              <p className="mt-2 text-sm text-gray-500">Get started by creating your first promotional banner with our visual editor.</p>
+              <div className="mt-8">
                 <button
                   onClick={() => setShowModal(true)}
-                  className="inline-flex items-center px-4 py-2 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700"
+                  className="inline-flex items-center px-6 py-3 border border-transparent shadow-sm text-sm font-medium rounded-lg text-white bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 transition-all duration-200"
                 >
-                  Add Banner
+                  <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                  </svg>
+                  Create Your First Banner
                 </button>
               </div>
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
               {banners.map((banner) => (
-                <div key={banner.id} className="bg-white border border-gray-200 rounded-lg shadow-sm overflow-hidden hover:shadow-md transition-shadow duration-200">
+                <div key={banner.id} className="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden hover:shadow-lg transition-all duration-200 group">
                   {/* Banner Image */}
-                  <div className="relative h-48 bg-gray-200">
+                  <div className="relative h-48 bg-gray-200 overflow-hidden">
                     <img
                       src={banner.image_url}
                       alt={banner.title}
-                      className="w-full h-full object-cover"
+                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
                       onError={(e) => {
                         e.target.src = 'https://via.placeholder.com/400x200/f0f0f0/999999?text=Image+Not+Found'
                       }}
                     />
-                    <div className="absolute inset-0 bg-black bg-opacity-30 flex items-end p-4">
+                    <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent flex items-end p-4">
                       <div>
                         <h3 className={`text-lg font-bold ${banner.text_color === 'white' ? 'text-white' : 'text-black'}`}>
                           {banner.title}
                         </h3>
                         {banner.subtitle && (
-                          <p className={`text-sm ${banner.text_color === 'white' ? 'text-white' : 'text-black'}`}>
+                          <p className={`text-sm ${banner.text_color === 'white' ? 'text-white/90' : 'text-black/90'}`}>
                             {banner.subtitle}
                           </p>
                         )}
@@ -314,11 +320,11 @@ export default function BannerManagement() {
                     </div>
                     
                     {/* Status Badge */}
-                    <div className="absolute top-2 right-2">
-                      <span className={`px-2 py-1 text-xs font-medium rounded-full ${
+                    <div className="absolute top-3 right-3">
+                      <span className={`px-3 py-1 text-xs font-medium rounded-full shadow-lg ${
                         banner.is_active 
-                          ? 'bg-green-100 text-green-800' 
-                          : 'bg-red-100 text-red-800'
+                          ? 'bg-green-500 text-white' 
+                          : 'bg-red-500 text-white'
                       }`}>
                         {banner.is_active ? 'Active' : 'Inactive'}
                       </span>
@@ -327,41 +333,47 @@ export default function BannerManagement() {
 
                   {/* Banner Details */}
                   <div className="p-4">
-                    <div className="flex items-center justify-between mb-2">
-                      <span className={`px-2 py-1 text-xs font-medium rounded ${getActionTypeColor(banner.action_type)}`}>
-                        {banner.action_type}
+                    <div className="flex items-center justify-between mb-3">
+                      <span className={`px-3 py-1 text-xs font-medium rounded-full ${getActionTypeColor(banner.action_type)}`}>
+                        {banner.action_type.toUpperCase()}
                       </span>
-                      <span className="text-xs text-gray-500">
+                      <span className="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded-full">
                         Order: {banner.display_order}
                       </span>
                     </div>
                     
                     {banner.action_value && (
-                      <p className="text-sm text-gray-600 mb-3">
-                        Target: {banner.action_value}
+                      <p className="text-sm text-gray-600 mb-3 truncate">
+                        <span className="font-medium">Target:</span> {banner.action_value}
                       </p>
                     )}
 
                     {/* Date Range */}
                     {(banner.start_date || banner.end_date) && (
-                      <div className="text-xs text-gray-500 mb-3">
+                      <div className="text-xs text-gray-500 mb-3 bg-gray-50 p-2 rounded-lg">
                         {banner.start_date && (
-                          <div>Start: {new Date(banner.start_date).toLocaleDateString()}</div>
+                          <div className="flex justify-between">
+                            <span>Start:</span>
+                            <span className="font-medium">{new Date(banner.start_date).toLocaleDateString()}</span>
+                          </div>
                         )}
                         {banner.end_date && (
-                          <div>End: {new Date(banner.end_date).toLocaleDateString()}</div>
+                          <div className="flex justify-between">
+                            <span>End:</span>
+                            <span className="font-medium">{new Date(banner.end_date).toLocaleDateString()}</span>
+                          </div>
                         )}
                       </div>
                     )}
 
                     {/* Actions */}
-                    <div className="flex justify-between items-center">
+                    <div className="flex justify-between items-center pt-3 border-t border-gray-100">
                       <button
                         onClick={() => handleToggleActive(banner)}
-                        className={`text-sm font-medium ${
+                        className={`text-sm font-medium px-3 py-1 rounded-lg transition-colors ${
                           banner.is_active 
-                            ? 'text-red-600 hover:text-red-800' 
-                            : 'text-green-600 hover:text-green-800'
+                            ? 'text-red-600 hover:bg-red-50' 
+                            : 'text-green-600 hover:bg-green-50'
                         }`}
                       >
                         {banner.is_active ? 'Deactivate' : 'Activate'}
@@ -370,13 +382,13 @@ export default function BannerManagement() {
                       <div className="flex space-x-2">
                         <button
                           onClick={() => handleEdit(banner)}
-                          className="text-indigo-600 hover:text-indigo-900 text-sm font-medium"
+                          className="text-indigo-600 hover:bg-indigo-50 text-sm font-medium px-3 py-1 rounded-lg transition-colors"
                         >
                           Edit
                         </button>
                         <button
                           onClick={() => handleDelete(banner.id)}
-                          className="text-red-600 hover:text-red-900 text-sm font-medium"
+                          className="text-red-600 hover:bg-red-50 text-sm font-medium px-3 py-1 rounded-lg transition-colors"
                         >
                           Delete
                         </button>
@@ -390,161 +402,14 @@ export default function BannerManagement() {
         </div>
       </div>
 
-      {/* Modal - same as before but with better styling */}
-      {showModal && (
-        <div className="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full z-50">
-          <div className="relative top-10 mx-auto p-5 border w-full max-w-2xl shadow-lg rounded-md bg-white">
-            <div className="mt-3">
-              <div className="flex justify-between items-center mb-4">
-                <h3 className="text-lg font-medium text-gray-900">
-                  {editingBanner ? 'Edit Banner' : 'Add New Banner'}
-                </h3>
-                <button
-                  onClick={resetForm}
-                  className="text-gray-400 hover:text-gray-600"
-                >
-                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-                </button>
-              </div>
-              
-              <form onSubmit={handleSubmit}>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="md:col-span-2">
-                    <label className="block text-sm font-medium text-gray-700">Title *</label>
-                    <input
-                      type="text"
-                      required
-                      className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
-                      value={formData.title}
-                      onChange={(e) => setFormData({...formData, title: e.target.value})}
-                    />
-                  </div>
-
-                  <div className="md:col-span-2">
-                    <label className="block text-sm font-medium text-gray-700">Subtitle</label>
-                    <input
-                      type="text"
-                      className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
-                      value={formData.subtitle}
-                      onChange={(e) => setFormData({...formData, subtitle: e.target.value})}
-                    />
-                  </div>
-
-                  <div className="md:col-span-2">
-                    <label className="block text-sm font-medium text-gray-700">Image URL *</label>
-                    <input
-                      type="url"
-                      required
-                      placeholder="https://example.com/image.jpg"
-                      className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
-                      value={formData.image_url}
-                      onChange={(e) => setFormData({...formData, image_url: e.target.value})}
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700">Text Color</label>
-                    <select
-                      className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
-                      value={formData.text_color}
-                      onChange={(e) => setFormData({...formData, text_color: e.target.value})}
-                    >
-                      <option value="white">White</option>
-                      <option value="black">Black</option>
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700">Action Type</label>
-                    <select
-                      className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
-                      value={formData.action_type}
-                      onChange={(e) => setFormData({...formData, action_type: e.target.value})}
-                    >
-                      <option value="category">Category</option>
-                      <option value="product">Product</option>
-                      <option value="url">External URL</option>
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700">Action Value</label>
-                    <input
-                      type="text"
-                      placeholder="electronics, product-123, or https://..."
-                      className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
-                      value={formData.action_value}
-                      onChange={(e) => setFormData({...formData, action_value: e.target.value})}
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700">Display Order</label>
-                    <input
-                      type="number"
-                      min="0"
-                      className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
-                      value={formData.display_order}
-                      onChange={(e) => setFormData({...formData, display_order: e.target.value})}
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700">Start Date (Optional)</label>
-                    <input
-                      type="date"
-                      className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
-                      value={formData.start_date}
-                      onChange={(e) => setFormData({...formData, start_date: e.target.value})}
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700">End Date (Optional)</label>
-                    <input
-                      type="date"
-                      className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
-                      value={formData.end_date}
-                      onChange={(e) => setFormData({...formData, end_date: e.target.value})}
-                    />
-                  </div>
-
-                  <div className="md:col-span-2">
-                    <label className="flex items-center">
-                      <input
-                        type="checkbox"
-                        className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
-                        checked={formData.is_active}
-                        onChange={(e) => setFormData({...formData, is_active: e.target.checked})}
-                      />
-                      <span className="ml-2 text-sm text-gray-700">Active</span>
-                    </label>
-                  </div>
-                </div>
-
-                <div className="flex justify-end space-x-4 mt-6">
-                  <button
-                    type="button"
-                    onClick={resetForm}
-                    className="px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={loading}
-                    className="px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 disabled:opacity-50"
-                  >
-                    {loading ? 'Saving...' : (editingBanner ? 'Update' : 'Create')}
-                  </button>
-                </div>
-              </form>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Visual Banner Creator Modal */}
+      <BannerCreator
+        isOpen={showModal}
+        onClose={resetForm}
+        onSubmit={handleSubmit}
+        editingBanner={editingBanner}
+        loading={submitLoading}
+      />
     </DashboardLayout>
   )
 }
