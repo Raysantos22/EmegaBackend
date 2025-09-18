@@ -181,7 +181,7 @@ const NotificationInbox = ({ navigation }) => {
                   source={{ uri: notification.image_url }}
                   style={styles.notificationImage}
                   defaultSource={require('../../assets/placeholder.png')}
-                />
+                  alt="Notification image" />
               ) : (
                 <View style={[styles.iconCircle, { backgroundColor: getNotificationColor(notification.type) }]}>
                   <Ionicons
@@ -250,8 +250,8 @@ const NotificationInbox = ({ navigation }) => {
         <View style={styles.emptyContainer}>
           <Ionicons name="notifications-outline" size={64} color="#9CA3AF" />
           <Text style={styles.emptyTitle}>No notifications</Text>
-          <Text style={styles.emptySubtitle}>
-            You'll see your notifications here when you receive them
+         <Text style={styles.emptySubtitle}>
+            You&apos;ll see your notifications here when you receive them
           </Text>
         </View>
       ) : (
