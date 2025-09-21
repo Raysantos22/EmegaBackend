@@ -1,4 +1,4 @@
-// pages/products.js - Modern Products Management
+// pages/products.js - Enhanced Products Management with Sync Controls
 import { useState, useEffect, useCallback } from 'react'
 import { useRouter } from 'next/router'
 import { supabase } from '../lib/supabase'
@@ -12,6 +12,11 @@ export default function ProductsManagement() {
   const [session, setSession] = useState(null)
   const [submitLoading, setSubmitLoading] = useState(false)
   const [searchTerm, setSearchTerm] = useState('')
+  const [syncStatus, setSyncStatus] = useState(null)
+  const [syncing, setSyncing] = useState(false)
+  const [autoSyncEnabled, setAutoSyncEnabled] = useState(false)
+  const [lastSyncTime, setLastSyncTime] = useState(null)
+  const [syncInterval, setSyncInterval] = useState(null)
   const [pagination, setPagination] = useState({
     page: 1,
     limit: 20,
@@ -73,10 +78,105 @@ export default function ProductsManagement() {
     }
   }, [pagination.limit])
 
+  const fetchSyncStatus = useCallback(async () => {
+    try {
+      const response = await fetch('/api/sync-status')
+      const result = await response.json()
+      setSyncStatus(result)
+      setLastSyncTime(result.last_sync)
+    } catch (error) {
+      console.error('Error fetching sync status:', error)
+    }
+  }, [])
+
+  const handleSync = async () => {
+    setSyncing(true)
+    showNotification('Starting sync with AutoDS...', 'info')
+    
+    try {
+      const response = await fetch('/api/sync-products', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      })
+
+      const result = await response.json()
+
+      if (result.success) {
+        showNotification(
+          `Sync completed! ${result.active_synced} products synced, ${result.zero_qty_removed} removed`, 
+          'success'
+        )
+        fetchProducts(pagination.page, searchTerm)
+        fetchSyncStatus()
+      } else {
+        showNotification('Sync failed: ' + result.error, 'error')
+      }
+    } catch (error) {
+      console.error('Sync error:', error)
+      showNotification('Sync failed: ' + error.message, 'error')
+    } finally {
+      setSyncing(false)
+    }
+  }
+
+  const toggleAutoSync = () => {
+    if (autoSyncEnabled) {
+      // Disable auto sync
+      if (syncInterval) {
+        clearInterval(syncInterval)
+        setSyncInterval(null)
+      }
+      setAutoSyncEnabled(false)
+      showNotification('Auto-sync disabled', 'info')
+    } else {
+      // Enable auto sync (every 30 minutes)
+      const interval = setInterval(() => {
+        handleSync()
+      }, 30 * 60 * 1000) // 30 minutes
+      
+      setSyncInterval(interval)
+      setAutoSyncEnabled(true)
+      showNotification('Auto-sync enabled (every 30 minutes)', 'success')
+    }
+  }
+
+  const removeZeroQuantityProducts = async () => {
+    if (!confirm('Are you sure you want to remove all products with zero quantity?')) return
+
+    try {
+      const response = await fetch('/api/products/cleanup-zero-qty', {
+        method: 'POST',
+      })
+
+      const result = await response.json()
+
+      if (result.success) {
+        showNotification(`Removed ${result.removed_count} zero quantity products`, 'success')
+        fetchProducts(pagination.page, searchTerm)
+        fetchSyncStatus()
+      } else {
+        showNotification('Cleanup failed: ' + result.error, 'error')
+      }
+    } catch (error) {
+      console.error('Cleanup error:', error)
+      showNotification('Cleanup failed: ' + error.message, 'error')
+    }
+  }
+
   useEffect(() => {
     checkUser()
     fetchProducts()
-  }, [checkUser, fetchProducts])
+    fetchSyncStatus()
+
+    // Cleanup interval on unmount
+    return () => {
+      if (syncInterval) {
+        clearInterval(syncInterval)
+      }
+    }
+  }, [checkUser, fetchProducts, fetchSyncStatus])
 
   const resetForm = () => {
     setFormData({
@@ -175,16 +275,33 @@ export default function ProductsManagement() {
 
   const showNotification = (message, type) => {
     const notification = document.createElement('div')
-    notification.className = `fixed top-4 right-4 px-6 py-3 rounded-lg shadow-lg z-50 ${
-      type === 'success' ? 'bg-green-500 text-white' : 'bg-red-500 text-white'
-    }`
+    const bgColor = {
+      success: 'bg-green-500',
+      error: 'bg-red-500',
+      info: 'bg-blue-500'
+    }[type] || 'bg-gray-500'
+    
+    notification.className = `fixed top-4 right-4 px-6 py-3 rounded-lg shadow-lg z-50 ${bgColor} text-white max-w-sm`
     notification.textContent = message
     document.body.appendChild(notification)
     setTimeout(() => {
       if (document.body.contains(notification)) {
         document.body.removeChild(notification)
       }
-    }, 3000)
+    }, 5000)
+  }
+
+  const formatLastSync = (timestamp) => {
+    if (!timestamp) return 'Never'
+    const date = new Date(timestamp)
+    const now = new Date()
+    const diffMs = now - date
+    const diffMins = Math.floor(diffMs / 60000)
+    
+    if (diffMins < 1) return 'Just now'
+    if (diffMins < 60) return `${diffMins} minutes ago`
+    if (diffMins < 1440) return `${Math.floor(diffMins / 60)} hours ago`
+    return date.toLocaleDateString()
   }
 
   if (loading && !products.length) {
@@ -199,27 +316,92 @@ export default function ProductsManagement() {
 
   return (
     <DashboardLayout session={session} supabase={supabase} currentPage="products">
-      {/* Page Header */}
+      {/* Enhanced Page Header with Sync Controls */}
       <div className="bg-white shadow-lg rounded-lg mb-6">
         <div className="px-6 py-4 border-b border-gray-200">
           <div className="flex justify-between items-center">
             <div>
               <h2 className="text-2xl font-bold text-gray-900">Product Management</h2>
               <p className="text-sm text-gray-600 mt-1">
-                Manage your product catalog and inventory
+                Manage your product catalog and sync with AutoDS
               </p>
             </div>
-            <button
-              onClick={() => setShowModal(true)}
-              className="bg-gradient-to-r from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 text-white px-6 py-3 rounded-lg font-medium transition-all duration-200 shadow-lg hover:shadow-xl flex items-center space-x-2"
-            >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
-              </svg>
-              <span>Add Product</span>
-            </button>
+            <div className="flex space-x-3">
+              <button
+                onClick={removeZeroQuantityProducts}
+                className="bg-gray-500 hover:bg-gray-600 text-white px-4 py-2 rounded-lg font-medium transition-all duration-200 text-sm"
+              >
+                Clean Zero Qty
+              </button>
+              <button
+                onClick={toggleAutoSync}
+                className={`px-4 py-2 rounded-lg font-medium transition-all duration-200 text-sm ${
+                  autoSyncEnabled 
+                    ? 'bg-orange-500 hover:bg-orange-600 text-white' 
+                    : 'bg-gray-200 hover:bg-gray-300 text-gray-700'
+                }`}
+              >
+                {autoSyncEnabled ? 'Disable Auto-Sync' : 'Enable Auto-Sync'}
+              </button>
+              <button
+                onClick={handleSync}
+                disabled={syncing}
+                className="bg-blue-500 hover:bg-blue-600 disabled:bg-blue-300 text-white px-4 py-2 rounded-lg font-medium transition-all duration-200 flex items-center space-x-2 text-sm"
+              >
+                {syncing ? (
+                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                ) : (
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                  </svg>
+                )}
+                <span>{syncing ? 'Syncing...' : 'Sync Now'}</span>
+              </button>
+              <button
+                onClick={() => setShowModal(true)}
+                className="bg-gradient-to-r from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 text-white px-6 py-3 rounded-lg font-medium transition-all duration-200 shadow-lg hover:shadow-xl flex items-center space-x-2"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                </svg>
+                <span>Add Product</span>
+              </button>
+            </div>
           </div>
         </div>
+
+        {/* Sync Status Bar */}
+        {syncStatus && (
+          <div className="px-6 py-3 bg-gray-50 border-b border-gray-200">
+            <div className="flex justify-between items-center text-sm">
+              <div className="flex items-center space-x-6">
+                <div className="flex items-center space-x-2">
+                  <div className={`w-3 h-3 rounded-full ${
+                    syncStatus.sync_health?.status === 'healthy' ? 'bg-green-400' : 'bg-yellow-400'
+                  }`}></div>
+                  <span className="text-gray-600">
+                    Status: <span className="font-medium">{syncStatus.sync_health?.status || 'Unknown'}</span>
+                  </span>
+                </div>
+                <div className="text-gray-600">
+                  Total Products: <span className="font-medium">{syncStatus.total_products}</span>
+                </div>
+                <div className="text-gray-600">
+                  Zero Quantity: <span className="font-medium text-orange-600">{syncStatus.zero_quantity_products}</span>
+                </div>
+                <div className="text-gray-600">
+                  Last Sync: <span className="font-medium">{formatLastSync(lastSyncTime)}</span>
+                </div>
+              </div>
+              {autoSyncEnabled && (
+                <div className="flex items-center space-x-2 text-green-600">
+                  <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></div>
+                  <span className="text-sm font-medium">Auto-sync active</span>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* Search and Stats */}
         <div className="px-6 py-4">
@@ -258,9 +440,23 @@ export default function ProductsManagement() {
               </div>
               <h3 className="mt-2 text-lg font-medium text-gray-900">No products found</h3>
               <p className="mt-2 text-sm text-gray-500">
-                {searchTerm ? 'No products match your search criteria.' : 'Get started by adding your first product.'}
+                {searchTerm ? 'No products match your search criteria.' : 'Get started by syncing with AutoDS or adding your first product.'}
               </p>
-              <div className="mt-8">
+              <div className="mt-8 flex justify-center space-x-4">
+                <button
+                  onClick={handleSync}
+                  disabled={syncing}
+                  className="inline-flex items-center px-6 py-3 border border-transparent shadow-sm text-sm font-medium rounded-lg text-white bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 transition-all duration-200"
+                >
+                  {syncing ? (
+                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
+                  ) : (
+                    <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                    </svg>
+                  )}
+                  {syncing ? 'Syncing...' : 'Sync with AutoDS'}
+                </button>
                 <button
                   onClick={() => setShowModal(true)}
                   className="inline-flex items-center px-6 py-3 border border-transparent shadow-sm text-sm font-medium rounded-lg text-white bg-gradient-to-r from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 transition-all duration-200"
@@ -268,7 +464,7 @@ export default function ProductsManagement() {
                   <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
                   </svg>
-                  Add First Product
+                  Add Manual Product
                 </button>
               </div>
             </div>
@@ -288,6 +484,9 @@ export default function ProductsManagement() {
                     </th>
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                       SKU
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Source
                     </th>
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                       Status
@@ -338,6 +537,13 @@ export default function ProductsManagement() {
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                         {product.sku}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-xs">
+                        {product.autods_id?.startsWith('manual_') ? (
+                          <span className="bg-blue-100 text-blue-800 px-2 py-1 rounded-full">Manual</span>
+                        ) : (
+                          <span className="bg-green-100 text-green-800 px-2 py-1 rounded-full">AutoDS</span>
+                        )}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
                         <span className={`px-2 py-1 text-xs font-medium rounded-full ${
@@ -394,7 +600,7 @@ export default function ProductsManagement() {
         </div>
       </div>
 
-      {/* Product Modal */}
+      {/* Product Modal - Same as before */}
       {showModal && (
         <div className="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full z-50">
           <div className="relative top-10 mx-auto p-5 border w-full max-w-2xl shadow-lg rounded-md bg-white">

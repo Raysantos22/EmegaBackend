@@ -1,4 +1,4 @@
-// pages/api/notifications/[id].js - Fixed with correct Supabase import
+// pages/api/notifications/[id].js - FIXED VERSION with display_mode support
 import { supabase } from '../../../lib/supabase'
 
 export default async function handler(req, res) {
@@ -59,6 +59,7 @@ async function updateNotification(req, res, id) {
     image_url,
     action_type,
     action_value,
+    display_mode, // ADD THIS LINE - handle display_mode
     scheduled_at,
     expires_at,
     status,
@@ -80,6 +81,25 @@ async function updateNotification(req, res, id) {
     throw fetchError
   }
 
+  // Validate display_mode if provided - ADD THIS VALIDATION
+  if (display_mode !== undefined) {
+    const validDisplayModes = ['alert_only', 'image_popup', 'both', 'badge_only', 'silent']
+    if (!validDisplayModes.includes(display_mode)) {
+      return res.status(400).json({ 
+        error: 'Invalid display mode',
+        valid_display_modes: validDisplayModes
+      })
+    }
+
+    // Validate image_url requirement for image display modes
+    if ((display_mode === 'image_popup' || display_mode === 'both') && !image_url && !existingNotification.image_url) {
+      return res.status(400).json({ 
+        error: 'Image URL is required for image popup display modes',
+        required_for: ['image_popup', 'both']
+      })
+    }
+  }
+
   const updateData = {
     updated_at: new Date().toISOString()
   }
@@ -91,6 +111,7 @@ async function updateNotification(req, res, id) {
   if (image_url !== undefined) updateData.image_url = image_url
   if (action_type !== undefined) updateData.action_type = action_type
   if (action_value !== undefined) updateData.action_value = action_value
+  if (display_mode !== undefined) updateData.display_mode = display_mode // ADD THIS LINE
   if (scheduled_at !== undefined) updateData.scheduled_at = scheduled_at
   if (expires_at !== undefined) updateData.expires_at = expires_at
   if (status !== undefined) updateData.status = status
@@ -219,7 +240,7 @@ async function deleteNotification(req, res, id) {
   })
 }
 
-// Enhanced function to process and send notifications
+// Enhanced function to process and send notifications with display_mode support
 async function processNotification(notificationId) {
   try {
     console.log(`🚀 Processing notification ${notificationId}`)
@@ -289,7 +310,7 @@ async function processNotification(notificationId) {
       }
     }
 
-    // Send push notifications via Expo
+    // Send push notifications via Expo with display_mode support
     const pushResults = await sendExpoPushNotifications(notification, targetUsers)
 
     // Update notification status and counts
@@ -335,37 +356,87 @@ async function processNotification(notificationId) {
   }
 }
 
-// Function to send push notifications via Expo
+// Enhanced function to send push notifications with display_mode support
 async function sendExpoPushNotifications(notification, targetUsers) {
   const expoPushTokens = targetUsers
     .map(user => user.device_token)
     .filter(token => token && (token.startsWith('ExponentPushToken') || token.startsWith('ExpoPushToken')))
 
-  console.log(`📬 Sending to ${expoPushTokens.length} Expo push tokens`)
+  console.log(`📬 Sending ${notification.display_mode || 'alert_only'} notification to ${expoPushTokens.length} Expo push tokens`)
 
   if (expoPushTokens.length === 0) {
     console.log('⚠️ No valid Expo push tokens found')
     return { successful: 0, failed: 0 }
   }
 
-  // Prepare push notification messages
-  const messages = expoPushTokens.map(token => ({
-    to: token,
-    sound: 'default',
-    title: notification.title,
-    body: notification.message,
-    data: {
-      id: notification.id,
-      type: notification.type || 'info',
-      action_type: notification.action_type || 'none',
-      action_value: notification.action_value,
-      image_url: notification.image_url,
-      sent_at: new Date().toISOString()
-    },
-    priority: 'high',
-    channelId: 'default',
-    badge: 1,
-  }))
+  // Prepare push notification messages with display_mode support
+  const messages = expoPushTokens.map(token => {
+    const baseMessage = {
+      to: token,
+      data: {
+        id: notification.id,
+        type: notification.type || 'info',
+        action_type: notification.action_type || 'none',
+        action_value: notification.action_value,
+        image_url: notification.image_url,
+        display_mode: notification.display_mode || 'alert_only', // IMPORTANT: Include display_mode
+        sent_at: new Date().toISOString()
+      },
+      priority: 'high',
+      channelId: 'default',
+    }
+
+    // Configure message based on display_mode
+    switch (notification.display_mode) {
+      case 'alert_only':
+        return {
+          ...baseMessage,
+          sound: 'default',
+          title: notification.title,
+          body: notification.message,
+          badge: 1,
+        }
+      
+      case 'image_popup':
+        return {
+          ...baseMessage,
+          // Silent notification - no sound/vibration for image popup only
+          title: notification.title,
+          body: notification.message,
+        }
+      
+      case 'both':
+        return {
+          ...baseMessage,
+          sound: 'default',
+          title: notification.title,
+          body: notification.message,
+          badge: 1,
+        }
+      
+      case 'badge_only':
+        return {
+          ...baseMessage,
+          // Silent notification with badge only
+          badge: 1,
+        }
+      
+      case 'silent':
+        return {
+          ...baseMessage,
+          // Completely silent - only data
+        }
+      
+      default:
+        return {
+          ...baseMessage,
+          sound: 'default',
+          title: notification.title,
+          body: notification.message,
+          badge: 1,
+        }
+    }
+  })
 
   // Split into chunks of 100 (Expo's limit)
   const chunks = []
@@ -414,7 +485,7 @@ async function sendExpoPushNotifications(notification, targetUsers) {
   return { successful, failed }
 }
 
-// Enhanced real-time notification broadcasting
+// Enhanced real-time notification broadcasting with display_mode
 async function triggerRealTimeNotification(notification, userIds) {
   try {
     console.log('📡 Broadcasting real-time notification to apps...')
@@ -427,6 +498,7 @@ async function triggerRealTimeNotification(notification, userIds) {
       image_url: notification.image_url,
       action_type: notification.action_type || 'none',
       action_value: notification.action_value,
+      display_mode: notification.display_mode || 'alert_only', // IMPORTANT: Include display_mode
       target_users: userIds,
       sent_at: new Date().toISOString(),
       created_at: notification.created_at

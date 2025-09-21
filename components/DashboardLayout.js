@@ -54,6 +54,16 @@ export default function ModernDashboardLayout({ children, session, supabase, cur
       ),
       current: currentPage === 'notifications' 
     },
+     { 
+      name: 'Home-layout', 
+      href: '/home-layout', 
+      icon: (
+        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-3.5-3.5a50.002 50.002 0 00-2.5 0L15 17zm-7.5-7.5a50.002 50.002 0 002.5 0L8 13l-7.5 4h5zm7.5-7.5l1.5 4.5h-3L8 6.5z" />
+        </svg>
+      ),
+      current: currentPage === 'notifications' 
+    },
     { 
       name: 'Orders', 
       href: '/orders', 

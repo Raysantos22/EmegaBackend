@@ -6,7 +6,10 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+      "sync:products": "curl -X POST http://localhost:3000/api/sync-products",
+    "cleanup:zero-qty": "curl -X POST http://localhost:3000/api/products/cleanup-zero-qty",
+    "check:sync-status": "curl http://localhost:3000/api/sync-status"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.57.4",

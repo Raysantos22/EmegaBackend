@@ -1,4 +1,4 @@
-// pages/notifications.js - Enhanced Notification Management with Resend
+// pages/notifications.js - Enhanced with Display Mode Support
 import { useState, useEffect, useCallback } from 'react'
 import { useRouter } from 'next/router'
 import { supabase } from '../lib/supabase'
@@ -20,7 +20,7 @@ export default function NotificationManagement() {
   })
   const router = useRouter()
 
-  // Form state
+  // Enhanced form state with display_mode
   const [formData, setFormData] = useState({
     title: '',
     message: '',
@@ -30,6 +30,7 @@ export default function NotificationManagement() {
     image_url: '',
     action_type: 'none',
     action_value: '',
+    display_mode: 'alert_only',
     scheduled_at: '',
     expires_at: '',
     send_immediately: false,
@@ -100,6 +101,7 @@ export default function NotificationManagement() {
       image_url: '',
       action_type: 'none',
       action_value: '',
+      display_mode: 'alert_only',
       scheduled_at: '',
       expires_at: '',
       send_immediately: false,
@@ -162,6 +164,7 @@ export default function NotificationManagement() {
       image_url: notification.image_url || '',
       action_type: notification.action_type || 'none',
       action_value: notification.action_value || '',
+      display_mode: notification.display_mode || 'alert_only',
       scheduled_at: notification.scheduled_at ? notification.scheduled_at.split('T')[0] : '',
       expires_at: notification.expires_at ? notification.expires_at.split('T')[0] : '',
       send_immediately: false,
@@ -285,6 +288,83 @@ export default function NotificationManagement() {
     }
   }
 
+  const getDisplayModeColor = (displayMode) => {
+    switch (displayMode) {
+      case 'alert_only': return 'bg-blue-100 text-blue-800'
+      case 'image_popup': return 'bg-purple-100 text-purple-800'
+      case 'both': return 'bg-indigo-100 text-indigo-800'
+      case 'badge_only': return 'bg-gray-100 text-gray-800'
+      case 'silent': return 'bg-gray-100 text-gray-600'
+      default: return 'bg-gray-100 text-gray-800'
+    }
+  }
+
+  const getDisplayModeIcon = (displayMode) => {
+    switch (displayMode) {
+      case 'alert_only': 
+        return (
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-5 5v-5zM4 19h8v-8H4v8z" />
+          </svg>
+        )
+      case 'image_popup':
+        return (
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+          </svg>
+        )
+      case 'both':
+        return (
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+          </svg>
+        )
+      case 'badge_only':
+        return (
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z" />
+          </svg>
+        )
+      case 'silent':
+        return (
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2" />
+          </svg>
+        )
+      default:
+        return null
+    }
+  }
+
+  const displayModeOptions = [
+    { 
+      value: 'alert_only', 
+      label: 'Alert Only', 
+      description: 'Standard notification alert (recommended for most messages)' 
+    },
+    { 
+      value: 'image_popup', 
+      label: 'Image Popup', 
+      description: 'Show image overlay in app (requires image_url)' 
+    },
+    { 
+      value: 'both', 
+      label: 'Alert + Image', 
+      description: 'Show alert notification then image popup' 
+    },
+    { 
+      value: 'badge_only', 
+      label: 'Badge Only', 
+      description: 'Silent notification that updates app badge' 
+    },
+    { 
+      value: 'silent', 
+      label: 'Silent', 
+      description: 'Process data without showing any UI (for background updates)' 
+    }
+  ]
+
   if (loading && !notifications.length) {
     return (
       <DashboardLayout session={session} supabase={supabase} currentPage="notifications">
@@ -373,7 +453,7 @@ export default function NotificationManagement() {
             <div>
               <h2 className="text-2xl font-bold text-gray-900">Notification Management</h2>
               <p className="text-sm text-gray-600 mt-1">
-                Send push notifications and manage user communications
+                Send push notifications with customizable display modes
               </p>
             </div>
             <button
@@ -423,6 +503,9 @@ export default function NotificationManagement() {
                     </th>
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                       Type
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Display Mode
                     </th>
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                       Sent/Scheduled
@@ -477,6 +560,16 @@ export default function NotificationManagement() {
                         <span className={`px-2 py-1 text-xs font-medium rounded-full ${getTypeColor(notification.type)}`}>
                           {notification.type}
                         </span>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <div className="flex items-center">
+                          <span className={`inline-flex items-center px-2 py-1 text-xs font-medium rounded-full ${getDisplayModeColor(notification.display_mode)}`}>
+                            {getDisplayModeIcon(notification.display_mode)}
+                            <span className="ml-1">
+                              {notification.display_mode?.replace('_', ' ') || 'alert only'}
+                            </span>
+                          </span>
+                        </div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                         {notification.sent_at 
@@ -563,10 +656,10 @@ export default function NotificationManagement() {
         </div>
       </div>
 
-      {/* Notification Modal */}
+      {/* Enhanced Notification Modal with Display Mode */}
       {showModal && (
         <div className="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full z-50">
-          <div className="relative top-10 mx-auto p-5 border w-full max-w-2xl shadow-lg rounded-md bg-white">
+          <div className="relative top-10 mx-auto p-5 border w-full max-w-3xl shadow-lg rounded-md bg-white">
             <div className="mt-3">
               <div className="flex justify-between items-center mb-4">
                 <h3 className="text-lg font-medium text-gray-900">
@@ -636,15 +729,65 @@ export default function NotificationManagement() {
                     </select>
                   </div>
 
+                  {/* Enhanced Display Mode Selection */}
                   <div className="md:col-span-2">
-                    <label className="block text-sm font-medium text-gray-700">Image URL (Optional)</label>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Display Mode *
+                    </label>
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                      {displayModeOptions.map((option) => (
+                        <div key={option.value} className="relative">
+                          <input
+                            type="radio"
+                            id={option.value}
+                            name="display_mode"
+                            value={option.value}
+                            checked={formData.display_mode === option.value}
+                            onChange={(e) => setFormData({...formData, display_mode: e.target.value})}
+                            className="sr-only"
+                          />
+                          <label
+                            htmlFor={option.value}
+                            className={`block w-full p-3 border-2 rounded-lg cursor-pointer transition-all duration-200 ${
+                              formData.display_mode === option.value
+                                ? 'border-red-500 bg-red-50 text-red-900'
+                                : 'border-gray-200 hover:border-gray-300 bg-white text-gray-700'
+                            }`}
+                          >
+                            <div className="flex items-center mb-1">
+                              <span className="mr-2">
+                                {getDisplayModeIcon(option.value)}
+                              </span>
+                              <span className="font-medium text-sm">
+                                {option.label}
+                              </span>
+                            </div>
+                            <p className="text-xs text-gray-500">
+                              {option.description}
+                            </p>
+                          </label>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="md:col-span-2">
+                    <label className="block text-sm font-medium text-gray-700">
+                      Image URL {(formData.display_mode === 'image_popup' || formData.display_mode === 'both') && '*'}
+                    </label>
                     <input
                       type="url"
+                      required={formData.display_mode === 'image_popup' || formData.display_mode === 'both'}
                       className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-red-500 focus:border-red-500"
                       value={formData.image_url}
                       onChange={(e) => setFormData({...formData, image_url: e.target.value})}
                       placeholder="https://example.com/image.jpg"
                     />
+                    {(formData.display_mode === 'image_popup' || formData.display_mode === 'both') && (
+                      <p className="mt-1 text-xs text-gray-500">
+                        Image URL is required for image popup display modes
+                      </p>
+                    )}
                   </div>
 
                   <div>

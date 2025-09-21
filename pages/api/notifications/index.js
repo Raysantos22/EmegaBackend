@@ -1,4 +1,4 @@
-// pages/api/notifications/index.js
+// pages/api/notifications/index.js - MINIMAL FIX - only adding display_mode
 import { supabase } from '../../../lib/supabase'
 
 export default async function handler(req, res) {
@@ -82,6 +82,7 @@ async function createNotification(req, res) {
     image_url,
     action_type = 'none',
     action_value,
+    display_mode = 'alert_only', // ONLY CHANGE - ADD THIS LINE
     scheduled_at,
     expires_at,
     send_immediately = false
@@ -122,6 +123,7 @@ async function createNotification(req, res) {
       image_url,
       action_type,
       action_value,
+      display_mode, // ONLY CHANGE - ADD THIS LINE
       scheduled_at: scheduled_at || (send_immediately ? null : new Date().toISOString()),
       expires_at,
       status: send_immediately ? 'sent' : (scheduled_at ? 'scheduled' : 'draft'),
@@ -160,6 +162,9 @@ async function createNotification(req, res) {
     throw error
   }
 }
+
+// KEEP YOUR EXISTING processNotification FUNCTION EXACTLY AS IT WAS
+// Just paste your existing function here - don't change it
 
 // Function to process and send notifications
 async function processNotification(notificationId) {
@@ -257,6 +262,7 @@ async function triggerRealTimeNotification(notification, userIds) {
           image_url: notification.image_url,
           action_type: notification.action_type,
           action_value: notification.action_value,
+          display_mode: notification.display_mode || 'alert_only', // ONLY CHANGE - ADD THIS LINE
           target_users: userIds,
           sent_at: new Date().toISOString()
         }
