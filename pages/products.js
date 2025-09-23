@@ -1,42 +1,21 @@
-// pages/products.js - Enhanced Products Management with Sync Controls
+// pages/products.js - AutoDS Style Product Management
 import { useState, useEffect, useCallback } from 'react'
 import { useRouter } from 'next/router'
 import { supabase } from '../lib/supabase'
 import DashboardLayout from '../components/DashboardLayout'
 
-export default function ProductsManagement() {
-  const [products, setProducts] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [showModal, setShowModal] = useState(false)
-  const [editingProduct, setEditingProduct] = useState(null)
+export default function ProductsPage() {
   const [session, setSession] = useState(null)
-  const [submitLoading, setSubmitLoading] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [products, setProducts] = useState([])
+  const [selectedProducts, setSelectedProducts] = useState([])
+  const [importUrl, setImportUrl] = useState('')
+  const [importStatus, setImportStatus] = useState('idle') // idle, importing, success, error
+  const [bulkUpdateStatus, setBulkUpdateStatus] = useState('idle')
+  const [filter, setFilter] = useState('all') // all, available, out_of_stock
   const [searchTerm, setSearchTerm] = useState('')
-  const [syncStatus, setSyncStatus] = useState(null)
-  const [syncing, setSyncing] = useState(false)
-  const [autoSyncEnabled, setAutoSyncEnabled] = useState(false)
-  const [lastSyncTime, setLastSyncTime] = useState(null)
-  const [syncInterval, setSyncInterval] = useState(null)
-  const [pagination, setPagination] = useState({
-    page: 1,
-    limit: 20,
-    total: 0,
-    pages: 0
-  })
+  const [notifications, setNotifications] = useState([])
   const router = useRouter()
-
-  // Form state
-  const [formData, setFormData] = useState({
-    title: '',
-    description: '',
-    price: '',
-    quantity: '',
-    sku: '',
-    main_picture_url: '',
-    shipping_price: '',
-    tags: [],
-    status: 2
-  })
 
   const checkUser = useCallback(async () => {
     const { data: { session } } = await supabase.auth.getSession()
@@ -44,271 +23,177 @@ export default function ProductsManagement() {
       router.push('/login')
     } else {
       setSession(session)
+      await loadProducts(session.user.id)
     }
+    setLoading(false)
   }, [router])
-
-  const fetchProducts = useCallback(async (page = 1, search = '') => {
-    try {
-      setLoading(true)
-      const params = new URLSearchParams({
-        page: page.toString(),
-        limit: pagination.limit.toString(),
-        status: '2',
-        sort_by: 'modified_at',
-        sort_order: 'desc'
-      })
-
-      if (search) {
-        params.append('search', search)
-      }
-
-      const response = await fetch(`/api/products?${params}`)
-      const result = await response.json()
-      
-      if (result.success) {
-        setProducts(result.products)
-        setPagination(result.pagination)
-      } else {
-        console.error('Failed to fetch products:', result.error)
-      }
-    } catch (error) {
-      console.error('Error fetching products:', error)
-    } finally {
-      setLoading(false)
-    }
-  }, [pagination.limit])
-
-  const fetchSyncStatus = useCallback(async () => {
-    try {
-      const response = await fetch('/api/sync-status')
-      const result = await response.json()
-      setSyncStatus(result)
-      setLastSyncTime(result.last_sync)
-    } catch (error) {
-      console.error('Error fetching sync status:', error)
-    }
-  }, [])
-
-  const handleSync = async () => {
-    setSyncing(true)
-    showNotification('Starting sync with AutoDS...', 'info')
-    
-    try {
-      const response = await fetch('/api/sync-products', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-      })
-
-      const result = await response.json()
-
-      if (result.success) {
-        showNotification(
-          `Sync completed! ${result.active_synced} products synced, ${result.zero_qty_removed} removed`, 
-          'success'
-        )
-        fetchProducts(pagination.page, searchTerm)
-        fetchSyncStatus()
-      } else {
-        showNotification('Sync failed: ' + result.error, 'error')
-      }
-    } catch (error) {
-      console.error('Sync error:', error)
-      showNotification('Sync failed: ' + error.message, 'error')
-    } finally {
-      setSyncing(false)
-    }
-  }
-
-  const toggleAutoSync = () => {
-    if (autoSyncEnabled) {
-      // Disable auto sync
-      if (syncInterval) {
-        clearInterval(syncInterval)
-        setSyncInterval(null)
-      }
-      setAutoSyncEnabled(false)
-      showNotification('Auto-sync disabled', 'info')
-    } else {
-      // Enable auto sync (every 30 minutes)
-      const interval = setInterval(() => {
-        handleSync()
-      }, 30 * 60 * 1000) // 30 minutes
-      
-      setSyncInterval(interval)
-      setAutoSyncEnabled(true)
-      showNotification('Auto-sync enabled (every 30 minutes)', 'success')
-    }
-  }
-
-  const removeZeroQuantityProducts = async () => {
-    if (!confirm('Are you sure you want to remove all products with zero quantity?')) return
-
-    try {
-      const response = await fetch('/api/products/cleanup-zero-qty', {
-        method: 'POST',
-      })
-
-      const result = await response.json()
-
-      if (result.success) {
-        showNotification(`Removed ${result.removed_count} zero quantity products`, 'success')
-        fetchProducts(pagination.page, searchTerm)
-        fetchSyncStatus()
-      } else {
-        showNotification('Cleanup failed: ' + result.error, 'error')
-      }
-    } catch (error) {
-      console.error('Cleanup error:', error)
-      showNotification('Cleanup failed: ' + error.message, 'error')
-    }
-  }
 
   useEffect(() => {
     checkUser()
-    fetchProducts()
-    fetchSyncStatus()
+  }, [checkUser])
 
-    // Cleanup interval on unmount
-    return () => {
-      if (syncInterval) {
-        clearInterval(syncInterval)
-      }
-    }
-  }, [checkUser, fetchProducts, fetchSyncStatus])
-
-  const resetForm = () => {
-    setFormData({
-      title: '',
-      description: '',
-      price: '',
-      quantity: '',
-      sku: '',
-      main_picture_url: '',
-      shipping_price: '',
-      tags: [],
-      status: 2
-    })
-    setEditingProduct(null)
-    setShowModal(false)
-  }
-
-  const handleSubmit = async (e) => {
-    e.preventDefault()
-    setSubmitLoading(true)
-
+  const loadProducts = async (userId) => {
     try {
-      const url = editingProduct ? `/api/products/${editingProduct.id}` : '/api/products'
-      const method = editingProduct ? 'PUT' : 'POST'
-
-      const response = await fetch(url, {
-        method,
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(formData),
-      })
-
-      const result = await response.json()
-
-      if (result.success) {
-        resetForm()
-        fetchProducts(pagination.page, searchTerm)
-        showNotification(
-          editingProduct ? 'Product updated successfully!' : 'Product created successfully!',
-          'success'
-        )
-      } else {
-        showNotification('Error saving product: ' + result.error, 'error')
+      const response = await fetch(`/api/kogan/products?userId=${userId}`)
+      const data = await response.json()
+      if (data.success) {
+        setProducts(data.products)
       }
     } catch (error) {
-      console.error('Error saving product:', error)
-      showNotification('Error saving product: ' + error.message, 'error')
-    } finally {
-      setSubmitLoading(false)
+      console.error('Error loading products:', error)
     }
   }
 
-  const handleEdit = (product) => {
-    setEditingProduct(product)
-    setFormData({
-      title: product.title || '',
-      description: product.description || '',
-      price: product.price || '',
-      quantity: product.quantity || '',
-      sku: product.sku || '',
-      main_picture_url: product.main_picture_url || '',
-      shipping_price: product.shipping_price || '',
-      tags: product.tags || [],
-      status: product.status || 2
-    })
-    setShowModal(true)
-  }
+  const handleImportProduct = async () => {
+    if (!importUrl.trim() || !session?.user?.id) return
 
-  const handleDelete = async (productId) => {
-    if (!confirm('Are you sure you want to delete this product?')) return
-
+    setImportStatus('importing')
     try {
-      const response = await fetch(`/api/products/${productId}`, {
-        method: 'DELETE',
+      const response = await fetch('/api/kogan/scrape', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          input: importUrl.trim(),
+          userId: session.user.id,
+          mode: 'single'
+        })
       })
 
-      const result = await response.json()
-
-      if (result.success) {
-        fetchProducts(pagination.page, searchTerm)
-        showNotification('Product deleted successfully!', 'success')
+      const data = await response.json()
+      if (response.ok && data.success) {
+        await loadProducts(session.user.id)
+        setImportUrl('')
+        setImportStatus('success')
+        addNotification(`Imported: ${data.products[0]?.name}`, 'success')
       } else {
-        showNotification('Error deleting product: ' + result.error, 'error')
+        throw new Error(data.error || 'Import failed')
       }
     } catch (error) {
-      console.error('Error deleting product:', error)
-      showNotification('Error deleting product: ' + error.message, 'error')
+      setImportStatus('error')
+      addNotification(`Import failed: ${error.message}`, 'error')
     }
   }
 
-  const handleSearch = (e) => {
-    e.preventDefault()
-    fetchProducts(1, searchTerm)
+  const handleBulkImport = async () => {
+    if (!session?.user?.id) return
+
+    setImportStatus('importing')
+    try {
+      const response = await fetch('/api/kogan/scrape', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          input: 'bulk',
+          userId: session.user.id,
+          mode: 'bulk'
+        })
+      })
+
+      const data = await response.json()
+      if (response.ok && data.success) {
+        await loadProducts(session.user.id)
+        setImportStatus('success')
+        addNotification(`Imported ${data.count} products`, 'success')
+      } else {
+        throw new Error(data.error || 'Bulk import failed')
+      }
+    } catch (error) {
+      setImportStatus('error')
+      addNotification(`Bulk import failed: ${error.message}`, 'error')
+    }
   }
 
-  const showNotification = (message, type) => {
-    const notification = document.createElement('div')
-    const bgColor = {
-      success: 'bg-green-500',
-      error: 'bg-red-500',
-      info: 'bg-blue-500'
-    }[type] || 'bg-gray-500'
-    
-    notification.className = `fixed top-4 right-4 px-6 py-3 rounded-lg shadow-lg z-50 ${bgColor} text-white max-w-sm`
-    notification.textContent = message
-    document.body.appendChild(notification)
+  const handleBulkUpdate = async () => {
+    if (selectedProducts.length === 0) return
+
+    setBulkUpdateStatus('updating')
+    try {
+      const response = await fetch('/api/kogan/update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId: session.user.id,
+          productIds: selectedProducts
+        })
+      })
+
+      const data = await response.json()
+      if (response.ok && data.success) {
+        await loadProducts(session.user.id)
+        setBulkUpdateStatus('success')
+        setSelectedProducts([])
+        addNotification(`Updated ${data.summary.success} products`, 'success')
+      } else {
+        throw new Error(data.error || 'Update failed')
+      }
+    } catch (error) {
+      setBulkUpdateStatus('error')
+      addNotification(`Update failed: ${error.message}`, 'error')
+    }
+  }
+
+  const handleDeleteSelected = async () => {
+    if (selectedProducts.length === 0) return
+
+    try {
+      const { error } = await supabase
+        .from('kogan_products')
+        .update({ monitoring_enabled: false })
+        .in('id', selectedProducts)
+        .eq('user_id', session.user.id)
+
+      if (error) throw error
+
+      await loadProducts(session.user.id)
+      setSelectedProducts([])
+      addNotification(`Removed ${selectedProducts.length} products`, 'info')
+    } catch (error) {
+      addNotification(`Delete failed: ${error.message}`, 'error')
+    }
+  }
+
+  const addNotification = (message, type = 'info') => {
+    const notification = { id: Date.now(), message, type, timestamp: new Date().toISOString() }
+    setNotifications(prev => [notification, ...prev.slice(0, 4)])
     setTimeout(() => {
-      if (document.body.contains(notification)) {
-        document.body.removeChild(notification)
-      }
+      setNotifications(prev => prev.filter(n => n.id !== notification.id))
     }, 5000)
   }
 
-  const formatLastSync = (timestamp) => {
-    if (!timestamp) return 'Never'
-    const date = new Date(timestamp)
-    const now = new Date()
-    const diffMs = now - date
-    const diffMins = Math.floor(diffMs / 60000)
+  const filteredProducts = products.filter(product => {
+    const matchesFilter = filter === 'all' || 
+      (filter === 'available' && product.status === 'In Stock') ||
+      (filter === 'out_of_stock' && product.status !== 'In Stock')
     
-    if (diffMins < 1) return 'Just now'
-    if (diffMins < 60) return `${diffMins} minutes ago`
-    if (diffMins < 1440) return `${Math.floor(diffMins / 60)} hours ago`
-    return date.toLocaleDateString()
+    const matchesSearch = !searchTerm || 
+      product.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      product.sku.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      product.brand.toLowerCase().includes(searchTerm.toLowerCase())
+
+    return matchesFilter && matchesSearch
+  })
+
+  const selectAll = () => {
+    if (selectedProducts.length === filteredProducts.length) {
+      setSelectedProducts([])
+    } else {
+      setSelectedProducts(filteredProducts.map(p => p.id))
+    }
   }
 
-  if (loading && !products.length) {
+  const toggleProduct = (productId) => {
+    setSelectedProducts(prev => 
+      prev.includes(productId) 
+        ? prev.filter(id => id !== productId)
+        : [...prev, productId]
+    )
+  }
+
+  if (loading) {
     return (
       <DashboardLayout session={session} supabase={supabase} currentPage="products">
         <div className="flex items-center justify-center h-64">
-          <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-red-600"></div>
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-red-600"></div>
         </div>
       </DashboardLayout>
     )
@@ -316,180 +201,183 @@ export default function ProductsManagement() {
 
   return (
     <DashboardLayout session={session} supabase={supabase} currentPage="products">
-      {/* Enhanced Page Header with Sync Controls */}
-      <div className="bg-white shadow-lg rounded-lg mb-6">
-        <div className="px-6 py-4 border-b border-gray-200">
-          <div className="flex justify-between items-center">
-            <div>
-              <h2 className="text-2xl font-bold text-gray-900">Product Management</h2>
-              <p className="text-sm text-gray-600 mt-1">
-                Manage your product catalog and sync with AutoDS
-              </p>
-            </div>
-            <div className="flex space-x-3">
-              <button
-                onClick={removeZeroQuantityProducts}
-                className="bg-gray-500 hover:bg-gray-600 text-white px-4 py-2 rounded-lg font-medium transition-all duration-200 text-sm"
-              >
-                Clean Zero Qty
-              </button>
-              <button
-                onClick={toggleAutoSync}
-                className={`px-4 py-2 rounded-lg font-medium transition-all duration-200 text-sm ${
-                  autoSyncEnabled 
-                    ? 'bg-orange-500 hover:bg-orange-600 text-white' 
-                    : 'bg-gray-200 hover:bg-gray-300 text-gray-700'
+      <div className="space-y-6">
+        {/* Notifications */}
+        {notifications.length > 0 && (
+          <div className="fixed top-4 right-4 z-50 space-y-2">
+            {notifications.map((notification) => (
+              <div
+                key={notification.id}
+                className={`p-4 rounded-lg shadow-lg border max-w-sm ${
+                  notification.type === 'success' ? 'bg-green-50 border-green-200 text-green-800' :
+                  notification.type === 'error' ? 'bg-red-50 border-red-200 text-red-800' :
+                  notification.type === 'warning' ? 'bg-yellow-50 border-yellow-200 text-yellow-800' :
+                  'bg-blue-50 border-blue-200 text-blue-800'
                 }`}
               >
-                {autoSyncEnabled ? 'Disable Auto-Sync' : 'Enable Auto-Sync'}
-              </button>
-              <button
-                onClick={handleSync}
-                disabled={syncing}
-                className="bg-blue-500 hover:bg-blue-600 disabled:bg-blue-300 text-white px-4 py-2 rounded-lg font-medium transition-all duration-200 flex items-center space-x-2 text-sm"
-              >
-                {syncing ? (
-                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
-                ) : (
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                  </svg>
-                )}
-                <span>{syncing ? 'Syncing...' : 'Sync Now'}</span>
-              </button>
-              <button
-                onClick={() => setShowModal(true)}
-                className="bg-gradient-to-r from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 text-white px-6 py-3 rounded-lg font-medium transition-all duration-200 shadow-lg hover:shadow-xl flex items-center space-x-2"
-              >
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
-                </svg>
-                <span>Add Product</span>
-              </button>
-            </div>
-          </div>
-        </div>
-
-        {/* Sync Status Bar */}
-        {syncStatus && (
-          <div className="px-6 py-3 bg-gray-50 border-b border-gray-200">
-            <div className="flex justify-between items-center text-sm">
-              <div className="flex items-center space-x-6">
-                <div className="flex items-center space-x-2">
-                  <div className={`w-3 h-3 rounded-full ${
-                    syncStatus.sync_health?.status === 'healthy' ? 'bg-green-400' : 'bg-yellow-400'
-                  }`}></div>
-                  <span className="text-gray-600">
-                    Status: <span className="font-medium">{syncStatus.sync_health?.status || 'Unknown'}</span>
-                  </span>
-                </div>
-                <div className="text-gray-600">
-                  Total Products: <span className="font-medium">{syncStatus.total_products}</span>
-                </div>
-                <div className="text-gray-600">
-                  Zero Quantity: <span className="font-medium text-orange-600">{syncStatus.zero_quantity_products}</span>
-                </div>
-                <div className="text-gray-600">
-                  Last Sync: <span className="font-medium">{formatLastSync(lastSyncTime)}</span>
-                </div>
+                <p className="text-sm font-medium">{notification.message}</p>
               </div>
-              {autoSyncEnabled && (
-                <div className="flex items-center space-x-2 text-green-600">
-                  <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></div>
-                  <span className="text-sm font-medium">Auto-sync active</span>
-                </div>
-              )}
-            </div>
+            ))}
           </div>
         )}
 
-        {/* Search and Stats */}
-        <div className="px-6 py-4">
-          <div className="flex justify-between items-center mb-4">
-            <form onSubmit={handleSearch} className="flex space-x-2">
+        {/* Header with Import */}
+        <div className="bg-white rounded-lg shadow-sm border border-gray-100 p-6">
+          <div className="flex items-center justify-between mb-6">
+            <div>
+              <h1 className="text-2xl font-bold text-gray-900">Products ({products.length})</h1>
+              <p className="text-gray-600 mt-1">Manage your imported products</p>
+            </div>
+            <div className="flex items-center space-x-3">
+              <button
+                onClick={handleBulkImport}
+                disabled={importStatus === 'importing'}
+                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 text-sm"
+              >
+                {importStatus === 'importing' ? 'Importing...' : 'Import All Categories'}
+              </button>
+            </div>
+          </div>
+
+          {/* Import Single Product */}
+          <div className="space-y-3">
+            <h3 className="text-lg font-medium text-gray-900">Import Product</h3>
+            <div className="flex space-x-3">
               <input
                 type="text"
-                placeholder="Search products..."
-                className="px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-transparent"
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
+                value={importUrl}
+                onChange={(e) => setImportUrl(e.target.value)}
+                placeholder="Paste Kogan URL, SKU, or product name..."
+                className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-orange-500 focus:border-transparent"
+                onKeyPress={(e) => e.key === 'Enter' && handleImportProduct()}
               />
               <button
-                type="submit"
-                className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg transition-colors"
+                onClick={handleImportProduct}
+                disabled={importStatus === 'importing' || !importUrl.trim()}
+                className="px-6 py-2 bg-orange-500 text-white rounded-lg hover:bg-orange-600 disabled:opacity-50 flex items-center space-x-2"
               >
-                Search
+                {importStatus === 'importing' ? (
+                  <>
+                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                    <span>Importing...</span>
+                  </>
+                ) : (
+                  <>
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                    </svg>
+                    <span>Import Product</span>
+                  </>
+                )}
               </button>
-            </form>
-            <div className="text-sm text-gray-600">
-              Showing {products.length} of {pagination.total} products
             </div>
           </div>
         </div>
-      </div>
 
-      {/* Products Grid/Table */}
-      <div className="bg-white shadow-lg rounded-lg">
-        <div className="px-6 py-4">
-          {products.length === 0 ? (
-            <div className="text-center py-16">
-              <div className="mx-auto h-24 w-24 text-gray-400 mb-4">
-                <svg fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+        {/* Filters and Actions */}
+        <div className="bg-white rounded-lg shadow-sm border border-gray-100 p-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-4">
+              {/* Filters */}
+              <div className="flex items-center space-x-2">
+                <button
+                  onClick={() => setFilter('all')}
+                  className={`px-3 py-1 rounded-full text-sm font-medium ${
+                    filter === 'all' ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                  }`}
+                >
+                  All
+                </button>
+                <button
+                  onClick={() => setFilter('available')}
+                  className={`px-3 py-1 rounded-full text-sm font-medium ${
+                    filter === 'available' ? 'bg-green-600 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                  }`}
+                >
+                  Available
+                </button>
+                <button
+                  onClick={() => setFilter('out_of_stock')}
+                  className={`px-3 py-1 rounded-full text-sm font-medium ${
+                    filter === 'out_of_stock' ? 'bg-red-600 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                  }`}
+                >
+                  Out Of Stock
+                </button>
+              </div>
+
+              {/* Search */}
+              <div className="relative">
+                <input
+                  type="text"
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  placeholder="Search products..."
+                  className="pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-orange-500 focus:border-transparent w-64"
+                />
+                <svg className="absolute left-3 top-2.5 h-4 w-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
                 </svg>
               </div>
-              <h3 className="mt-2 text-lg font-medium text-gray-900">No products found</h3>
-              <p className="mt-2 text-sm text-gray-500">
-                {searchTerm ? 'No products match your search criteria.' : 'Get started by syncing with AutoDS or adding your first product.'}
-              </p>
-              <div className="mt-8 flex justify-center space-x-4">
+            </div>
+
+            {/* Bulk Actions */}
+            {selectedProducts.length > 0 && (
+              <div className="flex items-center space-x-2">
+                <span className="text-sm text-gray-600">{selectedProducts.length} selected</span>
                 <button
-                  onClick={handleSync}
-                  disabled={syncing}
-                  className="inline-flex items-center px-6 py-3 border border-transparent shadow-sm text-sm font-medium rounded-lg text-white bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 transition-all duration-200"
+                  onClick={handleBulkUpdate}
+                  disabled={bulkUpdateStatus === 'updating'}
+                  className="px-3 py-1 bg-blue-600 text-white rounded text-sm hover:bg-blue-700"
                 >
-                  {syncing ? (
-                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
-                  ) : (
-                    <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                    </svg>
-                  )}
-                  {syncing ? 'Syncing...' : 'Sync with AutoDS'}
+                  {bulkUpdateStatus === 'updating' ? 'Updating...' : 'Bulk Update'}
                 </button>
                 <button
-                  onClick={() => setShowModal(true)}
-                  className="inline-flex items-center px-6 py-3 border border-transparent shadow-sm text-sm font-medium rounded-lg text-white bg-gradient-to-r from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 transition-all duration-200"
+                  onClick={handleDeleteSelected}
+                  className="px-3 py-1 bg-red-600 text-white rounded text-sm hover:bg-red-700"
                 >
-                  <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
-                  </svg>
-                  Add Manual Product
+                  Delete
                 </button>
               </div>
+            )}
+          </div>
+        </div>
+
+        {/* Products Table */}
+        <div className="bg-white rounded-lg shadow-sm border border-gray-100">
+          {filteredProducts.length === 0 ? (
+            <div className="text-center py-16">
+              <div className="text-gray-400 text-6xl mb-4">📦</div>
+              <h3 className="text-lg font-medium text-gray-900 mb-2">No products found</h3>
+              <p className="text-gray-600">Import some products to get started.</p>
             </div>
           ) : (
             <div className="overflow-x-auto">
-              <table className="min-w-full divide-y divide-gray-200">
-                <thead className="bg-gray-50">
+              <table className="min-w-full">
+                <thead className="bg-gray-50 border-b border-gray-200">
                   <tr>
+                    <th className="px-6 py-3 text-left">
+                      <input
+                        type="checkbox"
+                        checked={selectedProducts.length === filteredProducts.length && filteredProducts.length > 0}
+                        onChange={selectAll}
+                        className="h-4 w-4 text-orange-600 focus:ring-orange-500 border-gray-300 rounded"
+                      />
+                    </th>
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Product
+                      Name
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Variations
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Available
                     </th>
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                       Price
                     </th>
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Stock
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      SKU
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Source
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Status
+                      Profit
                     </th>
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                       Actions
@@ -497,74 +385,90 @@ export default function ProductsManagement() {
                   </tr>
                 </thead>
                 <tbody className="bg-white divide-y divide-gray-200">
-                  {products.map((product) => (
+                  {filteredProducts.map((product) => (
                     <tr key={product.id} className="hover:bg-gray-50">
-                      <td className="px-6 py-4 whitespace-nowrap">
+                      <td className="px-6 py-4">
+                        <input
+                          type="checkbox"
+                          checked={selectedProducts.includes(product.id)}
+                          onChange={() => toggleProduct(product.id)}
+                          className="h-4 w-4 text-orange-600 focus:ring-orange-500 border-gray-300 rounded"
+                        />
+                      </td>
+                      <td className="px-6 py-4">
                         <div className="flex items-center">
-                          {product.main_picture_url && (
-                            <img
-                              className="h-12 w-12 rounded-lg object-cover mr-4 border border-gray-200"
-                              src={product.main_picture_url}
-                              alt={product.title}
-                              onError={(e) => {
-                                e.target.src = 'https://via.placeholder.com/48x48/f0f0f0/999999?text=No+Image'
-                              }}
-                            />
-                          )}
+                          <img
+                            className="h-12 w-12 rounded-lg object-cover mr-4"
+                            src={product.image_url || `https://picsum.photos/100/100?random=${product.id}`}
+                            alt={product.name}
+                            onError={(e) => {
+                              e.target.src = `https://picsum.photos/100/100?random=${product.id}`
+                            }}
+                          />
                           <div>
-                            <div className="text-sm font-medium text-gray-900">
-                              {product.title}
+                            <div className="text-sm font-medium text-gray-900 max-w-xs truncate">
+                              {product.name}
                             </div>
-                            <div className="text-sm text-gray-500 truncate max-w-xs">
-                              {product.description}
+                            <div className="text-sm text-gray-500">
+                              SKU: {product.sku} • {product.brand}
                             </div>
                           </div>
                         </div>
                       </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <div className="text-sm text-gray-900">${product.price}</div>
-                        {product.shipping_price > 0 && (
-                          <div className="text-xs text-gray-500">+${product.shipping_price} shipping</div>
-                        )}
+                      <td className="px-6 py-4">
+                        <div className="flex items-center space-x-2">
+                          <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">
+                            1
+                          </span>
+                          <span className="text-xs text-gray-500">Available</span>
+                        </div>
                       </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <span className={`text-sm font-medium ${
-                          product.quantity > 10 ? 'text-green-600' : 
-                          product.quantity > 0 ? 'text-yellow-600' : 'text-red-600'
+                      <td className="px-6 py-4">
+                        <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
+                          product.status === 'In Stock' 
+                            ? 'bg-green-100 text-green-800' 
+                            : 'bg-red-100 text-red-800'
                         }`}>
-                          {product.quantity}
+                          {product.status === 'In Stock' ? '1' : '0'}
                         </span>
                       </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                        {product.sku}
+                      <td className="px-6 py-4">
+                        <div className="text-sm">
+                          <div className="font-semibold text-gray-900">
+                            ${product.price_current}
+                          </div>
+                          {product.price_original && (
+                            <div className="text-xs text-gray-500 line-through">
+                              ${product.price_original}
+                            </div>
+                          )}
+                        </div>
                       </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-xs">
-                        {product.autods_id?.startsWith('manual_') ? (
-                          <span className="bg-blue-100 text-blue-800 px-2 py-1 rounded-full">Manual</span>
-                        ) : (
-                          <span className="bg-green-100 text-green-800 px-2 py-1 rounded-full">AutoDS</span>
-                        )}
+                      <td className="px-6 py-4">
+                        <div className="text-sm font-medium text-green-600">
+                          ${(parseFloat(product.price_current || 0) * 0.3).toFixed(2)}
+                        </div>
+                        <div className="text-xs text-gray-500">30% margin</div>
                       </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <span className={`px-2 py-1 text-xs font-medium rounded-full ${
-                          product.status === 2 ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
-                        }`}>
-                          {product.status === 2 ? 'Active' : 'Inactive'}
-                        </span>
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                        <button
-                          onClick={() => handleEdit(product)}
-                          className="text-red-600 hover:text-red-900 mr-4 hover:bg-red-50 px-2 py-1 rounded transition-colors"
-                        >
-                          Edit
-                        </button>
-                        <button
-                          onClick={() => handleDelete(product.id)}
-                          className="text-gray-600 hover:text-red-900 hover:bg-red-50 px-2 py-1 rounded transition-colors"
-                        >
-                          Delete
-                        </button>
+                      <td className="px-6 py-4">
+                        <div className="flex items-center space-x-2">
+                          <button
+                            onClick={() => window.open(product.source_url, '_blank')}
+                            className="text-blue-600 hover:text-blue-900 text-sm"
+                          >
+                            View
+                          </button>
+                          <button className="text-gray-600 hover:text-gray-900 text-sm">
+                            Edit
+                          </button>
+                          <div className="relative">
+                            <button className="text-gray-400 hover:text-gray-600">
+                              <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                                <path d="M10 6a2 2 0 110-4 2 2 0 010 4zM10 12a2 2 0 110-4 2 2 0 010 4zM10 18a2 2 0 110-4 2 2 0 010 4z" />
+                              </svg>
+                            </button>
+                          </div>
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -572,164 +476,35 @@ export default function ProductsManagement() {
               </table>
             </div>
           )}
-
-          {/* Pagination */}
-          {pagination.pages > 1 && (
-            <div className="mt-6 flex items-center justify-between border-t border-gray-200 pt-4">
-              <div className="text-sm text-gray-700">
-                Page {pagination.page} of {pagination.pages} ({pagination.total} total products)
-              </div>
-              <div className="flex space-x-2">
-                <button
-                  onClick={() => fetchProducts(pagination.page - 1, searchTerm)}
-                  disabled={pagination.page === 1}
-                  className="px-3 py-1 border border-gray-300 rounded text-sm disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-50"
-                >
-                  Previous
-                </button>
-                <button
-                  onClick={() => fetchProducts(pagination.page + 1, searchTerm)}
-                  disabled={pagination.page === pagination.pages}
-                  className="px-3 py-1 border border-gray-300 rounded text-sm disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-50"
-                >
-                  Next
-                </button>
-              </div>
-            </div>
-          )}
         </div>
-      </div>
 
-      {/* Product Modal - Same as before */}
-      {showModal && (
-        <div className="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full z-50">
-          <div className="relative top-10 mx-auto p-5 border w-full max-w-2xl shadow-lg rounded-md bg-white">
-            <div className="mt-3">
-              <div className="flex justify-between items-center mb-4">
-                <h3 className="text-lg font-medium text-gray-900">
-                  {editingProduct ? 'Edit Product' : 'Add New Product'}
-                </h3>
-                <button
-                  onClick={resetForm}
-                  className="text-gray-400 hover:text-gray-600"
-                >
-                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-                </button>
+        {/* Status Messages */}
+        {importStatus === 'success' && (
+          <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+            <div className="flex">
+              <svg className="h-5 w-5 text-green-400" fill="currentColor" viewBox="0 0 20 20">
+                <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+              </svg>
+              <div className="ml-3">
+                <p className="text-sm text-green-700">Product imported successfully!</p>
               </div>
-              
-              <form onSubmit={handleSubmit}>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="md:col-span-2">
-                    <label className="block text-sm font-medium text-gray-700">Title *</label>
-                    <input
-                      type="text"
-                      required
-                      className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-red-500 focus:border-red-500"
-                      value={formData.title}
-                      onChange={(e) => setFormData({...formData, title: e.target.value})}
-                    />
-                  </div>
-
-                  <div className="md:col-span-2">
-                    <label className="block text-sm font-medium text-gray-700">Description</label>
-                    <textarea
-                      className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-red-500 focus:border-red-500"
-                      rows="3"
-                      value={formData.description}
-                      onChange={(e) => setFormData({...formData, description: e.target.value})}
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700">Price *</label>
-                    <input
-                      type="number"
-                      step="0.01"
-                      required
-                      className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-red-500 focus:border-red-500"
-                      value={formData.price}
-                      onChange={(e) => setFormData({...formData, price: e.target.value})}
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700">Quantity *</label>
-                    <input
-                      type="number"
-                      required
-                      className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-red-500 focus:border-red-500"
-                      value={formData.quantity}
-                      onChange={(e) => setFormData({...formData, quantity: e.target.value})}
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700">SKU</label>
-                    <input
-                      type="text"
-                      className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-red-500 focus:border-red-500"
-                      value={formData.sku}
-                      onChange={(e) => setFormData({...formData, sku: e.target.value})}
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700">Shipping Price</label>
-                    <input
-                      type="number"
-                      step="0.01"
-                      className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-red-500 focus:border-red-500"
-                      value={formData.shipping_price}
-                      onChange={(e) => setFormData({...formData, shipping_price: e.target.value})}
-                    />
-                  </div>
-
-                  <div className="md:col-span-2">
-                    <label className="block text-sm font-medium text-gray-700">Image URL</label>
-                    <input
-                      type="url"
-                      className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-red-500 focus:border-red-500"
-                      value={formData.main_picture_url}
-                      onChange={(e) => setFormData({...formData, main_picture_url: e.target.value})}
-                    />
-                  </div>
-
-                  <div className="md:col-span-2">
-                    <label className="block text-sm font-medium text-gray-700">Status</label>
-                    <select
-                      className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-red-500 focus:border-red-500"
-                      value={formData.status}
-                      onChange={(e) => setFormData({...formData, status: parseInt(e.target.value)})}
-                    >
-                      <option value={2}>Active</option>
-                      <option value={1}>Inactive</option>
-                    </select>
-                  </div>
-                </div>
-
-                <div className="flex justify-end space-x-4 mt-6">
-                  <button
-                    type="button"
-                    onClick={resetForm}
-                    className="px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={submitLoading}
-                    className="px-4 py-2 bg-red-600 text-white rounded-md hover:bg-red-700 disabled:opacity-50"
-                  >
-                    {submitLoading ? 'Saving...' : (editingProduct ? 'Update' : 'Create')}
-                  </button>
-                </div>
-              </form>
             </div>
           </div>
-        </div>
-      )}
+        )}
+
+        {importStatus === 'error' && (
+          <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+            <div className="flex">
+              <svg className="h-5 w-5 text-red-400" fill="currentColor" viewBox="0 0 20 20">
+                <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+              </svg>
+              <div className="ml-3">
+                <p className="text-sm text-red-700">Import failed. Please try again.</p>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
     </DashboardLayout>
   )
 }

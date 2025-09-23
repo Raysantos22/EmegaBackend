@@ -1,4 +1,4 @@
-// components/BannerCreator.js - Enhanced Visual Banner Creator
+// components/BannerCreator.js - Updated with no required fields
 import { useState, useRef, useEffect } from 'react'
 
 export default function BannerCreator({ 
@@ -77,8 +77,11 @@ export default function BannerCreator({
         start_date: editingBanner.start_date ? editingBanner.start_date.split('T')[0] : '',
         end_date: editingBanner.end_date ? editingBanner.end_date.split('T')[0] : ''
       })
+    } else {
+      // Reset form when creating new banner
+      resetForm()
     }
-  }, [editingBanner])
+  }, [editingBanner, isOpen])
 
   const resetForm = () => {
     setFormData({
@@ -97,6 +100,9 @@ export default function BannerCreator({
 
   const handleSubmit = (e) => {
     e.preventDefault()
+    
+    // No validation - allow submission with empty fields
+    console.log('Submitting form data:', formData)
     onSubmit(formData)
   }
 
@@ -149,6 +155,7 @@ export default function BannerCreator({
                 {templates.map((template, index) => (
                   <button
                     key={index}
+                    type="button"
                     onClick={() => applyTemplate(template)}
                     className="p-2 border border-gray-200 rounded-lg hover:border-indigo-300 transition-colors"
                   >
@@ -167,37 +174,42 @@ export default function BannerCreator({
             <form onSubmit={handleSubmit} className="space-y-4 max-h-[60vh] overflow-y-auto">
               <div className="grid grid-cols-2 gap-4">
                 <div className="col-span-2">
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Title *</label>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Title <span className="text-gray-400 text-xs">(optional)</span>
+                  </label>
                   <input
                     type="text"
-                    required
                     className="w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
                     value={formData.title}
                     onChange={(e) => setFormData({...formData, title: e.target.value})}
-                    placeholder="Enter banner title"
+                    placeholder="Enter banner title (can be empty)"
                   />
                 </div>
 
                 <div className="col-span-2">
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Subtitle</label>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Subtitle <span className="text-gray-400 text-xs">(optional)</span>
+                  </label>
                   <input
                     type="text"
                     className="w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
                     value={formData.subtitle}
                     onChange={(e) => setFormData({...formData, subtitle: e.target.value})}
-                    placeholder="Enter subtitle (optional)"
+                    placeholder="Enter subtitle (can be empty)"
                   />
                 </div>
 
                 <div className="col-span-2">
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Image</label>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Image <span className="text-gray-400 text-xs">(optional)</span>
+                  </label>
                   <div className="space-y-2">
                     <input
                       type="url"
                       className="w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
                       value={formData.image_url}
                       onChange={(e) => setFormData({...formData, image_url: e.target.value})}
-                      placeholder="https://example.com/image.jpg"
+                      placeholder="https://example.com/image.jpg (can be empty)"
                     />
                     <div className="text-center text-gray-500 text-sm">or</div>
                     <input
@@ -235,13 +247,15 @@ export default function BannerCreator({
                 </div>
 
                 <div className="col-span-2">
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Action Value</label>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Action Value <span className="text-gray-400 text-xs">(optional)</span>
+                  </label>
                   <input
                     type="text"
                     className="w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
                     value={formData.action_value}
                     onChange={(e) => setFormData({...formData, action_value: e.target.value})}
-                    placeholder="electronics, product-123, or https://..."
+                    placeholder="electronics, product-123, or https://... (can be empty)"
                   />
                 </div>
 
@@ -269,7 +283,9 @@ export default function BannerCreator({
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Start Date</label>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Start Date <span className="text-gray-400 text-xs">(optional)</span>
+                  </label>
                   <input
                     type="date"
                     className="w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
@@ -279,7 +295,9 @@ export default function BannerCreator({
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">End Date</label>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    End Date <span className="text-gray-400 text-xs">(optional)</span>
+                  </label>
                   <input
                     type="date"
                     className="w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
@@ -315,6 +333,7 @@ export default function BannerCreator({
                 <h4 className="text-lg font-semibold text-gray-900">Live Preview</h4>
                 <div className="flex space-x-2">
                   <button
+                    type="button"
                     onClick={() => setPreviewMode('mobile')}
                     className={`px-3 py-1 text-xs rounded ${
                       previewMode === 'mobile' 
@@ -325,6 +344,7 @@ export default function BannerCreator({
                     Mobile
                   </button>
                   <button
+                    type="button"
                     onClick={() => setPreviewMode('desktop')}
                     className={`px-3 py-1 text-xs rounded ${
                       previewMode === 'desktop' 
@@ -358,6 +378,7 @@ export default function BannerCreator({
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
                         </svg>
                         <p className="text-sm">No image selected</p>
+                        <p className="text-xs text-gray-500 mt-1">Image is optional</p>
                       </div>
                     </div>
                   )}
@@ -365,18 +386,26 @@ export default function BannerCreator({
                   {/* Text Overlay */}
                   <div className="absolute inset-0 bg-black bg-opacity-30 flex items-end p-4">
                     <div>
-                      {formData.title && (
+                      {formData.title ? (
                         <h3 className={`text-lg font-bold ${
                           formData.text_color === 'white' ? 'text-white' : 'text-black'
                         }`}>
                           {formData.title}
                         </h3>
+                      ) : (
+                        <h3 className="text-lg font-bold text-gray-400 italic">
+                          No title (optional)
+                        </h3>
                       )}
-                      {formData.subtitle && (
+                      {formData.subtitle ? (
                         <p className={`text-sm ${
                           formData.text_color === 'white' ? 'text-white' : 'text-black'
                         }`}>
                           {formData.subtitle}
+                        </p>
+                      ) : (
+                        <p className="text-sm text-gray-400 italic">
+                          No subtitle (optional)
                         </p>
                       )}
                     </div>
@@ -401,12 +430,12 @@ export default function BannerCreator({
                       <span className="text-gray-500">Action:</span>
                       <span className="font-medium">{formData.action_type}</span>
                     </div>
-                    {formData.action_value && (
-                      <div className="flex justify-between">
-                        <span className="text-gray-500">Target:</span>
-                        <span className="font-medium truncate ml-2">{formData.action_value}</span>
-                      </div>
-                    )}
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">Target:</span>
+                      <span className="font-medium truncate ml-2">
+                        {formData.action_value || 'Not specified (optional)'}
+                      </span>
+                    </div>
                     <div className="flex justify-between">
                       <span className="text-gray-500">Order:</span>
                       <span className="font-medium">{formData.display_order}</span>
@@ -432,17 +461,17 @@ export default function BannerCreator({
               </div>
 
               {/* Preview Info */}
-              <div className="mt-4 p-3 bg-blue-50 rounded-lg">
+              <div className="mt-4 p-3 bg-green-50 rounded-lg">
                 <div className="flex items-start">
-                  <svg className="w-5 h-5 text-blue-400 mt-0.5 mr-2" fill="currentColor" viewBox="0 0 20 20">
+                  <svg className="w-5 h-5 text-green-400 mt-0.5 mr-2" fill="currentColor" viewBox="0 0 20 20">
                     <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
                   </svg>
-                  <div className="text-sm text-blue-800">
-                    <p className="font-medium">Preview Tips:</p>
+                  <div className="text-sm text-green-800">
+                    <p className="font-medium">Flexible Mode Active:</p>
                     <ul className="mt-1 text-xs space-y-1">
-                      <li>• Images should be at least 800x400px for best quality</li>
-                      <li>• Use high contrast text colors for readability</li>
-                      <li>• Test on both mobile and desktop views</li>
+                      <li>• All fields are optional - you can submit with empty title/subtitle</li>
+                      <li>• Image URL can be empty or invalid</li>
+                      <li>• Great for testing or placeholder banners</li>
                     </ul>
                   </div>
                 </div>

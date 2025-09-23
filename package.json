@@ -7,14 +7,16 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-      "sync:products": "curl -X POST http://localhost:3000/api/sync-products",
+    "sync:products": "curl -X POST http://localhost:3000/api/sync-products",
     "cleanup:zero-qty": "curl -X POST http://localhost:3000/api/products/cleanup-zero-qty",
     "check:sync-status": "curl http://localhost:3000/api/sync-status"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.57.4",
     "axios": "^1.12.2",
+    "cheerio": "^1.1.2",
     "next": "15.5.3",
+    "puppeteer": "^24.22.0",
     "react": "19.1.0",
     "react-dom": "19.1.0"
   },

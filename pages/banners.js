@@ -52,43 +52,62 @@ export default function BannerManagement() {
   }
 
   const handleSubmit = async (formData) => {
-    setSubmitLoading(true)
+  setSubmitLoading(true)
 
-    try {
-      const url = editingBanner ? `/api/banners/${editingBanner.id}` : '/api/banners'
-      const method = editingBanner ? 'PUT' : 'POST'
+  try {
+    const url = editingBanner ? `/api/banners/${editingBanner.id}` : '/api/banners'
+    const method = editingBanner ? 'PUT' : 'POST'
 
-      const response = await fetch(url, {
-        method,
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(formData),
-      })
+    // Debug logging
+    console.log('=== DEBUG INFO ===')
+    console.log('Editing banner:', editingBanner)
+    console.log('URL:', url)
+    console.log('Method:', method)
+    console.log('Form data:', formData)
+    console.log('================')
 
-      const result = await response.json()
+    const response = await fetch(url, {
+      method,
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(formData),
+    })
 
-      if (result.success) {
-        resetForm()
-        fetchBanners()
-        // Show success notification
-        const notification = document.createElement('div')
-        notification.className = 'fixed top-4 right-4 bg-green-500 text-white px-6 py-3 rounded-lg shadow-lg z-50'
-        notification.textContent = editingBanner ? 'Banner updated successfully!' : 'Banner created successfully!'
-        document.body.appendChild(notification)
-        setTimeout(() => {
-          document.body.removeChild(notification)
-        }, 3000)
-      } else {
-        alert('Error saving banner: ' + result.error)
-      }
-    } catch (error) {
-      console.error('Error saving banner:', error)
-      alert('Error saving banner: ' + error.message)
-    } finally {
-      setSubmitLoading(false)
+    console.log('Response status:', response.status)
+    console.log('Response URL:', response.url)
+
+    // Check if the response is ok before parsing JSON
+    if (!response.ok) {
+      const errorText = await response.text()
+      console.error('Error response text:', errorText)
+      throw new Error(`HTTP ${response.status}: ${errorText}`)
     }
+
+    const result = await response.json()
+    console.log('Response result:', result)
+
+    if (result.success) {
+      resetForm()
+      fetchBanners()
+      // Show success notification
+      const notification = document.createElement('div')
+      notification.className = 'fixed top-4 right-4 bg-green-500 text-white px-6 py-3 rounded-lg shadow-lg z-50'
+      notification.textContent = editingBanner ? 'Banner updated successfully!' : 'Banner created successfully!'
+      document.body.appendChild(notification)
+      setTimeout(() => {
+        document.body.removeChild(notification)
+      }, 3000)
+    } else {
+      alert('Error saving banner: ' + result.error)
+    }
+  } catch (error) {
+    console.error('Error saving banner:', error)
+    alert('Error saving banner: ' + error.message)
+  } finally {
+    setSubmitLoading(false)
   }
+}
 
   const handleEdit = (banner) => {
     setEditingBanner(banner)
