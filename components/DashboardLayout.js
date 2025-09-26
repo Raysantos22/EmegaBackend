@@ -3,7 +3,7 @@ import { useState } from 'react'
 import { useRouter } from 'next/router'
 import Link from 'next/link'
 
-export default function ModernDashboardLayout({ children, session, supabase, currentPage = 'dashboard' }) {
+export default function ModernDashboardLayout({ children, session, supabase, currentPage = 'amazon-products' }) {
   const router = useRouter()
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false)
 
