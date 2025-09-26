@@ -835,7 +835,7 @@ export default function AmazonProductsPage() {
               <div className="space-y-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Type "DELETE_ALL_PRODUCTS" to confirm:
+                    Type &quot;DELETE_ALL_PRODUCTS&quot; to confirm:
                   </label>
                   <input
                     type="text"
