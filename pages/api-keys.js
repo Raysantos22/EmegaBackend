@@ -242,7 +242,7 @@ export default function ApiKeysPage() {
                 <div className="p-6">
                   <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-4">
                     <p className="text-sm text-yellow-800 font-medium mb-2">
-                      Save this key now! You won't be able to see it again.
+                      Save this key now! You won t be able to see it again.
                     </p>
                     <code className="text-sm bg-white px-3 py-2 rounded block break-all border border-yellow-300">
                       {newlyCreatedKey}
