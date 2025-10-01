@@ -1,4 +1,4 @@
-// pages/login.js - Fixed redirect
+// pages/login.js - Redirect to amazon-products
 import { useState } from 'react'
 import { useRouter } from 'next/router'
 import { supabase } from '../lib/supabase'
@@ -26,8 +26,8 @@ export default function Login() {
       if (isSignUp) {
         alert('Check your email for verification link!')
       } else {
-        // Fixed: Redirect to homepage (main dashboard) instead of /dashboard
-        router.push('/')
+        // Redirect directly to amazon-products page
+        router.push('/amazon-products')
       }
     } catch (error) {
       setError(error.message)
