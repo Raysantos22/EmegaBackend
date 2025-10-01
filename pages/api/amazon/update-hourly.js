@@ -1,441 +1,344 @@
-// pages/api/amazon/update-hourly.js - Optimized for 1M+ products
-import { createClient } from '@supabase/supabase-js'
+// pages/api/amazon/update-hourly.js - Fixed with category handling
+import { supabase } from '../../../lib/supabase'
+import { scrapeAmazonProduct, scrapeAmazonProductWithVariants, calculateStockSummary } from '../../../lib/amazonScraper'
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_KEY,
-  { 
-    auth: { autoRefreshToken: false, persistSession: false },
-    db: { schema: 'public' }
-  }
-)
-
-// Configuration for large-scale processing
-const CONFIG = {
-  BATCH_SIZE: 100,           // Products per batch
-  MAX_CONCURRENT: 20,        // Concurrent updates per batch
-  BATCH_DELAY: 500,          // Delay between batches (ms)
-  REQUEST_DELAY: 100,        // Delay between individual requests (ms)
-  MAX_ERRORS_BEFORE_DEACTIVATE: 10,
-  CHUNK_SIZE: 1000,          // Database query chunk size
-  PROGRESS_UPDATE_INTERVAL: 50 // Update progress every N products
-}
+const cancelFlags = new Map()
 
 export default async function handler(req, res) {
+  if (req.method === 'DELETE') {
+    const { sessionId } = req.body
+    if (sessionId) {
+      cancelFlags.set(sessionId, true)
+      console.log(`[CANCEL-UPDATE] Session ${sessionId} marked for cancellation`)
+      
+      await supabase
+        .from('update_sessions')
+        .update({ 
+          status: 'cancelled',
+          completed_at: new Date().toISOString()
+        })
+        .eq('id', sessionId)
+      
+      return res.status(200).json({ success: true, message: 'Update cancelled' })
+    }
+    return res.status(400).json({ error: 'Session ID required' })
+  }
+
   if (req.method !== 'POST') {
-    return res.status(405).json({ 
-      success: false,
-      error: 'Method not allowed' 
-    })
+    return res.status(405).json({ error: 'Method not allowed' })
   }
 
   try {
-    console.log('Starting hourly update process...')
-    
-    // Check if there's already a running update
-    const { data: existingBatch } = await supabase
-      .from('update_batches')
-      .select('*')
-      .eq('status', 'running')
-      .single()
+    const { 
+      userId,
+      limit = 50,
+      country = 'AU',
+      fetchVariants = true,
+      accurateStock = true,
+      maxVariants = 999
+    } = req.body
 
-    if (existingBatch) {
-      return res.status(409).json({
-        success: false,
-        error: 'Update already in progress',
-        batchId: existingBatch.id
+    if (!userId) {
+      return res.status(400).json({ error: 'userId required' })
+    }
+
+    console.log('[UPDATE-ALL] Starting bulk update...')
+
+    const { data: products, error } = await supabase
+      .from('products')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('is_active', true)
+      .lt('scrape_errors', 10)
+      .order('last_scraped', { ascending: true })
+      .limit(limit)
+
+    if (error) throw error
+
+    if (!products || products.length === 0) {
+      return res.status(200).json({
+        success: true,
+        message: 'No products to update',
+        stats: { total: 0, updated: 0, failed: 0 }
       })
     }
 
-    // Get total count of active products
-    const { count: totalProducts, error: countError } = await supabase
-      .from('products')
-      .select('*', { count: 'exact', head: true })
-      .eq('is_active', true)
-
-    if (countError) {
-      throw countError
-    }
-
-    console.log(`Found ${totalProducts} active products to update`)
-
-    // Create update batch
-    const { data: batch, error: batchError } = await supabase
-      .from('update_batches')
+    const { data: session, error: sessionError } = await supabase
+      .from('update_sessions')
       .insert({
+        user_id: userId,
+        total_products: products.length,
         status: 'running',
-        total_products: totalProducts,
         started_at: new Date().toISOString()
       })
       .select()
       .single()
 
-    if (batchError) {
-      throw batchError
+    if (sessionError) {
+      console.error('[SESSION-ERROR]:', sessionError)
+      throw new Error(`Failed to create update session: ${sessionError.message}`)
     }
 
-    console.log(`Created update batch ${batch.id}`)
+    cancelFlags.set(session.id, false)
 
-    // Start background processing (don't await)
-    processUpdatesInBackground(batch.id, totalProducts)
-      .catch(error => {
-        console.error('Background update error:', error)
-      })
+    processUpdateBatch(userId, products, session.id, country, {
+      fetchVariants,
+      accurateStock,
+      maxVariants
+    }).catch(error => console.error('[UPDATE-ALL] Error:', error))
 
     return res.status(200).json({
       success: true,
-      message: `Hourly update started for ${totalProducts} products`,
-      batchId: batch.id,
-      totalProducts
+      message: `Update started for ${products.length} products`,
+      sessionId: session.id,
+      totalProducts: products.length
     })
 
   } catch (error) {
-    console.error('Update initialization error:', error)
+    console.error('[UPDATE-ALL] Error:', error)
     return res.status(500).json({
       success: false,
-      error: 'Failed to start update',
+      error: 'Bulk update failed',
       message: error.message
     })
   }
 }
 
-async function processUpdatesInBackground(batchId, totalProducts) {
-  const results = { 
-    processed: 0, 
-    updated: 0, 
-    failed: 0, 
-    deactivated: 0,
-    priceChanges: 0,
-    stockChanges: 0
-  }
-
-  const startTime = Date.now()
-  console.log(`Starting background update processing for batch ${batchId}`)
-
-  try {
-    // Process products in chunks to handle large datasets efficiently
-    const totalChunks = Math.ceil(totalProducts / CONFIG.CHUNK_SIZE)
-    let offset = 0
-
-    for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
-      console.log(`Processing chunk ${chunkIndex + 1}/${totalChunks}`)
-
-      // Get products chunk (prioritize oldest first)
-      const { data: products, error: fetchError } = await supabase
-        .from('products')
-        .select('*')
-        .eq('is_active', true)
-        .order('last_scraped', { ascending: true, nullsFirst: true })
-        .range(offset, offset + CONFIG.CHUNK_SIZE - 1)
-
-      if (fetchError) {
-        console.error('Error fetching products chunk:', fetchError)
-        break
-      }
-
-      if (!products || products.length === 0) {
-        console.log('No more products to process')
-        break
-      }
-
-      console.log(`Got ${products.length} products in chunk ${chunkIndex + 1}`)
-
-      // Process chunk in batches
-      const batchResults = await processProductsChunk(products, batchId)
-      
-      // Accumulate results
-      results.processed += batchResults.processed
-      results.updated += batchResults.updated
-      results.failed += batchResults.failed
-      results.deactivated += batchResults.deactivated
-      results.priceChanges += batchResults.priceChanges
-      results.stockChanges += batchResults.stockChanges
-
-      // Update batch progress
-      await updateBatchProgress(batchId, results)
-
-      // Log progress
-      const elapsed = (Date.now() - startTime) / 1000
-      const rate = results.processed / elapsed
-      const remaining = totalProducts - results.processed
-      const eta = remaining / Math.max(rate, 0.1)
-
-      console.log(`Progress: ${results.processed}/${totalProducts} (${Math.round(results.processed/totalProducts*100)}%) - Rate: ${rate.toFixed(1)}/s - ETA: ${Math.round(eta/60)}min`)
-
-      offset += CONFIG.CHUNK_SIZE
-
-      // Brief pause between chunks
-      await new Promise(resolve => setTimeout(resolve, CONFIG.BATCH_DELAY))
-    }
-
-    // Mark batch as completed
-    await supabase
-      .from('update_batches')
-      .update({
-        status: 'completed',
-        completed_at: new Date().toISOString(),
-        processed_products: results.processed,
-        updated_products: results.updated,
-        failed_products: results.failed
-      })
-      .eq('id', batchId)
-
-    const totalTime = (Date.now() - startTime) / 1000
-    console.log(`Update batch ${batchId} completed:`, {
-      ...results,
-      totalTimeSeconds: Math.round(totalTime),
-      averageRate: (results.processed / totalTime).toFixed(2) + '/s'
-    })
-
-  } catch (error) {
-    console.error(`Update batch ${batchId} failed:`, error)
-    
-    await supabase
-      .from('update_batches')
-      .update({
-        status: 'failed',
-        completed_at: new Date().toISOString(),
-        error_message: error.message,
-        processed_products: results.processed,
-        updated_products: results.updated,
-        failed_products: results.failed
-      })
-      .eq('id', batchId)
-  }
-}
-
-async function processProductsChunk(products, batchId) {
-  const chunkResults = { 
-    processed: 0, 
-    updated: 0, 
-    failed: 0, 
-    deactivated: 0,
-    priceChanges: 0,
-    stockChanges: 0
-  }
-
-  // Process products in smaller batches with concurrency control
-  const totalBatches = Math.ceil(products.length / CONFIG.BATCH_SIZE)
-  
-  for (let batchIndex = 0; batchIndex < totalBatches; batchIndex++) {
-    const batchStart = batchIndex * CONFIG.BATCH_SIZE
-    const batchEnd = Math.min(batchStart + CONFIG.BATCH_SIZE, products.length)
-    const batch = products.slice(batchStart, batchEnd)
-
-    // Process batch with controlled concurrency
-    const batchPromises = []
-    for (let i = 0; i < batch.length; i += CONFIG.MAX_CONCURRENT) {
-      const chunk = batch.slice(i, i + CONFIG.MAX_CONCURRENT)
-      
-      const chunkPromise = Promise.all(
-        chunk.map(async (product, index) => {
-          // Stagger requests to avoid rate limiting
-          await new Promise(resolve => setTimeout(resolve, index * CONFIG.REQUEST_DELAY))
-          return updateSingleProduct(product, batchId)
-        })
-      )
-      
-      batchPromises.push(chunkPromise)
-    }
-
-    // Wait for all chunks in this batch to complete
-    const batchResponses = await Promise.all(batchPromises)
-    
-    // Process results
-    for (const chunkResponses of batchResponses) {
-      for (const result of chunkResponses) {
-        chunkResults.processed++
-        
-        if (result.success) {
-          if (result.updated) {
-            chunkResults.updated++
-          }
-          if (result.priceChanged) {
-            chunkResults.priceChanges++
-          }
-          if (result.stockChanged) {
-            chunkResults.stockChanges++
-          }
-          if (result.deactivated) {
-            chunkResults.deactivated++
-          }
-        } else {
-          chunkResults.failed++
-        }
-      }
-    }
-
-    // Brief pause between batches
-    await new Promise(resolve => setTimeout(resolve, CONFIG.BATCH_DELAY))
-  }
-
-  return chunkResults
-}
-
-async function updateSingleProduct(product, batchId) {
-  try {
-    // Simulate price and stock updates (in production, this would scrape Amazon)
-    const updatedData = await simulateProductScraping(product)
-    
-    // Check if there are any changes
-    const hasChanges = 
-      updatedData.supplier_price !== product.supplier_price ||
-      updatedData.stock_status !== product.stock_status ||
-      updatedData.rating_average !== product.rating_average
-
-    const result = {
-      success: true,
-      updated: hasChanges,
-      priceChanged: updatedData.supplier_price !== product.supplier_price,
-      stockChanged: updatedData.stock_status !== product.stock_status,
-      deactivated: false
-    }
-
-    // Update product if changes detected
-    if (hasChanges) {
-      const { error: updateError } = await supabase
-        .from('products')
-        .update({
-          supplier_price: updatedData.supplier_price,
-          our_price: updatedData.our_price,
-          stock_status: updatedData.stock_status,
-          rating_average: updatedData.rating_average,
-          rating_count: updatedData.rating_count,
-          last_scraped: new Date().toISOString(),
-          scrape_errors: 0 // Reset error count on successful update
-        })
-        .eq('id', product.id)
-
-      if (updateError) throw updateError
-
-      // Add price history if price changed
-      if (result.priceChanged) {
-        await supabase
-          .from('price_history')
-          .insert({
-            product_id: product.id,
-            supplier_price: updatedData.supplier_price,
-            our_price: updatedData.our_price,
-            stock_status: updatedData.stock_status,
-            recorded_at: new Date().toISOString()
-          })
-          .catch(err => console.warn('Price history insert failed:', err))
-      }
-
-      // Log successful update
-      await logUpdate(batchId, product.id, 'updated', {
-        old_price: product.supplier_price,
-        new_price: updatedData.supplier_price,
-        old_stock: product.stock_status,
-        new_stock: updatedData.stock_status
-      })
-
-    } else {
-      // No changes, just update last_scraped timestamp
-      await supabase
-        .from('products')
-        .update({
-          last_scraped: new Date().toISOString(),
-          scrape_errors: 0
-        })
-        .eq('id', product.id)
-
-      await logUpdate(batchId, product.id, 'no_change')
-    }
-
-    return result
-
-  } catch (error) {
-    console.error(`Failed to update product ${product.internal_sku}:`, error.message)
-
-    // Increment error count
-    const newErrorCount = (product.scrape_errors || 0) + 1
-    const shouldDeactivate = newErrorCount >= CONFIG.MAX_ERRORS_BEFORE_DEACTIVATE
-
-    await supabase
-      .from('products')
-      .update({
-        scrape_errors: newErrorCount,
-        is_active: !shouldDeactivate,
-        last_scraped: new Date().toISOString()
-      })
-      .eq('id', product.id)
-
-    // Log error
-    await logUpdate(batchId, product.id, shouldDeactivate ? 'deactivated' : 'error', {
-      error_message: error.message.substring(0, 255)
-    })
-
-    return {
-      success: false,
-      updated: false,
-      priceChanged: false,
-      stockChanged: false,
-      deactivated: shouldDeactivate
-    }
-  }
-}
-
-async function simulateProductScraping(product) {
-  // Simulate realistic price fluctuations (±10%)
-  const priceVariation = 0.9 + Math.random() * 0.2 // 0.9 to 1.1
-  const newSupplierPrice = parseFloat((product.supplier_price * priceVariation).toFixed(2))
-  const newOurPrice = parseFloat((newSupplierPrice * 1.2 + 0.30).toFixed(2))
-
-  // Simulate occasional stock changes
-  const stockOptions = ['In Stock', 'Limited Stock', 'Out of Stock']
-  const newStockStatus = Math.random() < 0.05 ? // 5% chance of stock change
-    stockOptions[Math.floor(Math.random() * stockOptions.length)] :
-    product.stock_status
-
-  // Simulate minor rating changes
-  const newRatingAverage = product.rating_average + (Math.random() - 0.5) * 0.2
-  const clampedRating = Math.max(1.0, Math.min(5.0, parseFloat(newRatingAverage.toFixed(1))))
-
-  // Simulate rating count increases
-  const ratingIncrease = Math.floor(Math.random() * 10) // 0-9 new ratings
-  const newRatingCount = (product.rating_count || 0) + ratingIncrease
-
-  return {
-    supplier_price: newSupplierPrice,
-    our_price: newOurPrice,
-    stock_status: newStockStatus,
-    rating_average: clampedRating,
-    rating_count: newRatingCount
-  }
-}
-
-async function updateBatchProgress(batchId, results) {
-  try {
-    await supabase
-      .from('update_batches')
-      .update({
-        processed_products: results.processed,
-        updated_products: results.updated,
-        failed_products: results.failed
-      })
-      .eq('id', batchId)
-  } catch (error) {
-    console.warn('Failed to update batch progress:', error.message)
-  }
-}
-
-async function logUpdate(batchId, productId, action, details = {}) {
+async function logUpdateActivity(sessionId, asin, status, message, productId = null) {
   try {
     await supabase
       .from('update_logs')
       .insert({
-        batch_id: batchId,
+        batch_id: sessionId,
         product_id: productId,
-        action,
-        old_price: details.old_price || null,
-        new_price: details.new_price || null,
-        old_stock: details.old_stock || null,
-        new_stock: details.new_stock || null,
-        error_message: details.error_message || null,
+        action: status,
+        error_message: status === 'error' ? message : null,
         created_at: new Date().toISOString()
       })
   } catch (error) {
-    console.warn('Failed to log update:', error.message)
+    console.warn('[LOG] Failed to log activity:', error.message)
+  }
+}
+
+async function processUpdateBatch(userId, products, sessionId, country, options) {
+  const stats = {
+    processed: 0,
+    updated: 0,
+    failed: 0,
+    errors: []
+  }
+
+  try {
+    const batchSize = 10
+    const totalBatches = Math.ceil(products.length / batchSize)
+
+    for (let batchIndex = 0; batchIndex < totalBatches; batchIndex++) {
+      if (cancelFlags.get(sessionId)) {
+        console.log(`[UPDATE-ALL] Session ${sessionId} cancelled`)
+        await supabase
+          .from('update_sessions')
+          .update({
+            status: 'cancelled',
+            completed_at: new Date().toISOString(),
+            processed_products: stats.processed,
+            updated_products: stats.updated,
+            failed_products: stats.failed
+          })
+          .eq('id', sessionId)
+        cancelFlags.delete(sessionId)
+        return
+      }
+
+      const batchStart = batchIndex * batchSize
+      const batchEnd = Math.min(batchStart + batchSize, products.length)
+      const batch = products.slice(batchStart, batchEnd)
+      
+      console.log(`[UPDATE-ALL] Batch ${batchIndex + 1}/${totalBatches}`)
+
+      const promises = batch.map(async (product) => {
+        try {
+          await logUpdateActivity(sessionId, product.supplier_asin, 'processing', 'Scraping fresh data')
+          
+          let scrapedData
+          if (options.fetchVariants) {
+            scrapedData = await scrapeAmazonProductWithVariants(product.supplier_asin, country, {
+              fetchVariants: true,
+              maxVariants: options.maxVariants,
+              accurateStock: options.accurateStock
+            })
+          } else {
+            scrapedData = await scrapeAmazonProduct(product.supplier_asin, country)
+          }
+          
+          if (!scrapedData || !scrapedData.title) {
+            throw new Error('No valid data returned')
+          }
+
+          const metadata = scrapedData.metadata || {}
+          delete scrapedData.metadata
+          
+          if (scrapedData.variants?.has_variations) {
+            const stockSummary = calculateStockSummary(scrapedData.variants)
+            metadata.stock_summary = stockSummary
+          }
+
+          const { error: updateError } = await supabase
+            .from('products')
+            .update({
+              title: truncateString(scrapedData.title, 1000),
+              brand: truncateString(scrapedData.brand, 500),
+              category: typeof scrapedData.category === 'string' 
+                ? truncateString(scrapedData.category, 500)
+                : (scrapedData.category?.name ? truncateString(scrapedData.category.name, 500) : null),
+              image_urls: Array.isArray(scrapedData.image_urls)
+                ? scrapedData.image_urls.map(url => truncateString(url, 1000))
+                : scrapedData.image_urls,
+              description: truncateString(scrapedData.description, 5000),
+              features: Array.isArray(scrapedData.features) 
+                ? scrapedData.features.map(f => truncateString(f, 500))
+                : scrapedData.features,
+              supplier_price: scrapedData.supplier_price,
+              our_price: scrapedData.our_price,
+              currency: truncateString(scrapedData.currency, 3),
+              stock_status: truncateString(scrapedData.stock_status, 50),
+              stock_quantity: scrapedData.stock_quantity,
+              rating_average: scrapedData.rating_average,
+              rating_count: scrapedData.rating_count,
+              shipping_info: cleanShippingInfo(scrapedData.shipping_info),
+              variants: cleanVariants(scrapedData.variants),
+              metadata: metadata,
+              last_scraped: new Date().toISOString(),
+              scrape_errors: 0,
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', product.id)
+
+          if (updateError) throw updateError
+
+          if (product.supplier_price !== scrapedData.supplier_price) {
+            await supabase
+              .from('price_history')
+              .insert({
+                product_id: product.id,
+                supplier_price: scrapedData.supplier_price,
+                our_price: scrapedData.our_price,
+                stock_status: scrapedData.stock_status,
+                recorded_at: new Date().toISOString()
+              })
+              .catch(err => console.warn('[PRICE-HISTORY]:', err.message))
+          }
+
+          stats.processed++
+          stats.updated++
+          await logUpdateActivity(sessionId, product.supplier_asin, 'success', 'Updated', product.id)
+          console.log(`[UPDATE] ✓ ${product.supplier_asin}`)
+
+        } catch (error) {
+          console.error(`[UPDATE] ✗ ${product.supplier_asin}:`, error.message)
+          
+          const newErrorCount = (product.scrape_errors || 0) + 1
+          const shouldDeactivate = newErrorCount >= 10
+
+          await supabase
+            .from('products')
+            .update({
+              scrape_errors: newErrorCount,
+              is_active: !shouldDeactivate,
+              last_scraped: new Date().toISOString()
+            })
+            .eq('id', product.id)
+            .catch(err => console.warn('[ERROR-UPDATE]:', err.message))
+
+          stats.processed++
+          stats.failed++
+          stats.errors.push({
+            asin: product.supplier_asin,
+            error: error.message.substring(0, 100)
+          })
+          await logUpdateActivity(sessionId, product.supplier_asin, 'error', error.message.substring(0, 255))
+        }
+      })
+
+      await Promise.all(promises)
+      
+      await supabase
+        .from('update_sessions')
+        .update({
+          processed_products: stats.processed,
+          updated_products: stats.updated,
+          failed_products: stats.failed
+        })
+        .eq('id', sessionId)
+
+      if (batchIndex < totalBatches - 1) {
+        await new Promise(resolve => setTimeout(resolve, 1000))
+      }
+    }
+
+    await supabase
+      .from('update_sessions')
+      .update({
+        status: 'completed',
+        completed_at: new Date().toISOString(),
+        processed_products: stats.processed,
+        updated_products: stats.updated,
+        failed_products: stats.failed
+      })
+      .eq('id', sessionId)
+
+    cancelFlags.delete(sessionId)
+    console.log('[UPDATE-ALL] Completed:', stats)
+
+  } catch (error) {
+    console.error('[UPDATE-ALL] Error:', error)
+    
+    await supabase
+      .from('update_sessions')
+      .update({
+        status: 'failed',
+        completed_at: new Date().toISOString(),
+        error_message: error.message,
+        processed_products: stats.processed,
+        updated_products: stats.updated,
+        failed_products: stats.failed
+      })
+      .eq('id', sessionId)
+    
+    cancelFlags.delete(sessionId)
+  }
+}
+
+function truncateString(str, maxLength) {
+  if (!str) return str
+  if (typeof str !== 'string') return str
+  if (str.length <= maxLength) return str
+  return str.substring(0, maxLength - 3) + '...'
+}
+
+function cleanShippingInfo(shippingInfo) {
+  if (!shippingInfo || typeof shippingInfo !== 'object') return shippingInfo
+  
+  return Object.keys(shippingInfo).reduce((acc, key) => {
+    const value = shippingInfo[key]
+    acc[key] = typeof value === 'string' ? truncateString(value, 500) : value
+    return acc
+  }, {})
+}
+
+function cleanVariants(variants) {
+  if (!variants || !variants.options || !Array.isArray(variants.options)) {
+    return variants
+  }
+  
+  return {
+    ...variants,
+    options: variants.options.map(variant => ({
+      ...variant,
+      asin: truncateString(variant.asin, 20),
+      title: truncateString(variant.title, 500),
+      value: truncateString(variant.value, 500),
+      dimension_name: truncateString(variant.dimension_name, 200),
+      image_url: truncateString(variant.image_url, 1000)
+    }))
   }
 }

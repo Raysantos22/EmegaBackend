@@ -19,9 +19,6 @@ export default async function handler(req, res) {
       })
     }
 
-    console.log(`Checking CSV import status for user: ${userId}, session: ${sessionId || 'latest'}`)
-
-    // Build query based on whether sessionId is provided
     let query = supabase
       .from('csv_import_sessions')
       .select('*')
@@ -60,7 +57,6 @@ export default async function handler(req, res) {
       })
     }
 
-    // Calculate progress
     const progress = {
       processed: session.processed_skus || 0,
       imported: session.imported_products || 0,
@@ -71,25 +67,14 @@ export default async function handler(req, res) {
         Math.round((session.processed_skus || 0) / session.total_skus * 100) : 0
     }
 
-    // Calculate processing rate and ETA for running imports
-    let processingStats = null
-    if (session.status === 'running' && session.started_at && progress.processed > 0) {
-      const startTime = new Date(session.started_at).getTime()
-      const currentTime = Date.now()
-      const elapsedSeconds = (currentTime - startTime) / 1000
-      const processingRate = progress.processed / elapsedSeconds // items per second
-      const remaining = progress.total - progress.processed
-      const etaSeconds = remaining / Math.max(processingRate, 0.1) // Avoid division by zero
-      
-      processingStats = {
-        elapsedSeconds: Math.round(elapsedSeconds),
-        processingRate: parseFloat(processingRate.toFixed(2)),
-        etaSeconds: Math.round(etaSeconds),
-        etaMinutes: Math.round(etaSeconds / 60)
-      }
+    // Parse activity logs from error_details JSONB
+    let importDetails = []
+    if (session.error_details && Array.isArray(session.error_details)) {
+      importDetails = session.error_details
+        .filter(item => item.asin) // Only items with ASIN (activity logs)
+        .slice(-50) // Last 50 activities
     }
 
-    // Format session data for response
     const sessionData = {
       id: session.id,
       status: session.status,
@@ -100,17 +85,15 @@ export default async function handler(req, res) {
       failed_skus: session.failed_skus,
       error_message: session.error_message,
       started_at: session.started_at,
-      completed_at: session.completed_at,
-      processing_stats: processingStats
+      completed_at: session.completed_at
     }
-
-    console.log(`CSV import status: ${session.status}, progress: ${progress.percentage}%`)
 
     return res.status(200).json({
       success: true,
       session: sessionData,
       progress,
-      status: session.status
+      status: session.status,
+      importDetails: importDetails
     })
 
   } catch (error) {

@@ -1,52 +1,73 @@
-// pages/api/amazon/bulk-import-csv.js - Updated with improved error handling
+// pages/api/amazon/update-hourly.js - Fixed with category handling
 import { supabase } from '../../../lib/supabase'
-import { scrapeAmazonProduct, rateLimiter } from '../../../lib/amazonScraper'
-import Papa from 'papaparse'
+import { scrapeAmazonProduct, scrapeAmazonProductWithVariants, calculateStockSummary } from '../../../lib/amazonScraper'
 
-export const config = {
-  api: {
-    bodyParser: {
-      sizeLimit: '50mb',
-    },
-  },
-}
+const cancelFlags = new Map()
 
 export default async function handler(req, res) {
+  if (req.method === 'DELETE') {
+    const { sessionId } = req.body
+    if (sessionId) {
+      cancelFlags.set(sessionId, true)
+      console.log(`[CANCEL-UPDATE] Session ${sessionId} marked for cancellation`)
+      
+      await supabase
+        .from('update_sessions')
+        .update({ 
+          status: 'cancelled',
+          completed_at: new Date().toISOString()
+        })
+        .eq('id', sessionId)
+      
+      return res.status(200).json({ success: true, message: 'Update cancelled' })
+    }
+    return res.status(400).json({ error: 'Session ID required' })
+  }
+
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' })
   }
 
   try {
-    const { csvData, userId } = req.body
+    const { 
+      userId,
+      limit = 50,
+      country = 'AU',
+      fetchVariants = true,
+      accurateStock = true,
+      maxVariants = 999
+    } = req.body
 
-    if (!csvData || !userId) {
-      return res.status(400).json({ 
-        success: false,
-        error: 'CSV data and userId required' 
+    if (!userId) {
+      return res.status(400).json({ error: 'userId required' })
+    }
+
+    console.log('[UPDATE-ALL] Starting bulk update...')
+
+    const { data: products, error } = await supabase
+      .from('products')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('is_active', true)
+      .lt('scrape_errors', 10)
+      .order('last_scraped', { ascending: true })
+      .limit(limit)
+
+    if (error) throw error
+
+    if (!products || products.length === 0) {
+      return res.status(200).json({
+        success: true,
+        message: 'No products to update',
+        stats: { total: 0, updated: 0, failed: 0 }
       })
     }
 
-    console.log('Starting CSV bulk import with real scraping for user:', userId)
-
-    // Parse CSV data
-    const validItems = parseAndValidateCsv(csvData)
-    
-    if (validItems.length === 0) {
-      return res.status(400).json({
-        success: false,
-        error: 'No valid ASINs/SKUs found in CSV',
-        message: 'CSV should contain valid 10-character Amazon ASINs or SKUs'
-      })
-    }
-
-    console.log(`Found ${validItems.length} valid ASINs to import`)
-
-    // Create import session
     const { data: session, error: sessionError } = await supabase
-      .from('csv_import_sessions')
+      .from('update_sessions')
       .insert({
         user_id: userId,
-        total_skus: validItems.length,
+        total_products: products.length,
         status: 'running',
         started_at: new Date().toISOString()
       })
@@ -54,393 +75,270 @@ export default async function handler(req, res) {
       .single()
 
     if (sessionError) {
-      console.error('Session creation error:', sessionError)
-      throw new Error('Failed to create import session')
+      console.error('[SESSION-ERROR]:', sessionError)
+      throw new Error(`Failed to create update session: ${sessionError.message}`)
     }
 
-    console.log('Created import session:', session.id)
+    cancelFlags.set(session.id, false)
 
-    // Start background processing (don't await)
-    processCsvImportWithScraping(userId, validItems, session.id)
-      .catch(error => {
-        console.error('Background processing error:', error)
-      })
+    processUpdateBatch(userId, products, session.id, country, {
+      fetchVariants,
+      accurateStock,
+      maxVariants
+    }).catch(error => console.error('[UPDATE-ALL] Error:', error))
 
     return res.status(200).json({
       success: true,
-      message: `CSV import started for ${validItems.length} ASINs with real Amazon AU scraping`,
+      message: `Update started for ${products.length} products`,
       sessionId: session.id,
-      totalSkus: validItems.length,
-      estimatedTime: `${Math.ceil(validItems.length * 8 / 60)} minutes` // ~8 seconds per item with aggressive rate limiting
+      totalProducts: products.length
     })
 
   } catch (error) {
-    console.error('CSV import error:', error)
+    console.error('[UPDATE-ALL] Error:', error)
     return res.status(500).json({
       success: false,
-      error: 'CSV import failed',
+      error: 'Bulk update failed',
       message: error.message
     })
   }
 }
 
-function parseAndValidateCsv(csvData) {
-  const validItems = []
-  const seenAsins = new Set()
-  
-  // Parse CSV with headers
-  const parsed = Papa.parse(csvData, {
-    header: true,
-    skipEmptyLines: true,
-    dynamicTyping: false,
-    transformHeader: (header) => header.trim().toLowerCase().replace(/\s+/g, '_')
-  })
-
-  console.log(`Parsed ${parsed.data.length} rows from CSV`)
-
-  // If no proper headers detected, try as simple list
-  if (parsed.data.length > 0 && Object.keys(parsed.data[0]).length === 1) {
-    const simpleParseData = Papa.parse(csvData, {
-      header: false,
-      skipEmptyLines: true
-    })
-    
-    for (const row of simpleParseData.data) {
-      if (row && row[0]) {
-        const asin = extractValidAsin(row[0])
-        if (asin && !seenAsins.has(asin)) {
-          seenAsins.add(asin)
-          validItems.push({ asin })
-        }
-      }
-    }
-  } else {
-    // Process with headers
-    for (const row of parsed.data) {
-      if (row && typeof row === 'object') {
-        const asin = extractAsinFromRow(row)
-        if (asin && !seenAsins.has(asin)) {
-          seenAsins.add(asin)
-          validItems.push({ 
-            asin,
-            originalData: row 
-          })
-        }
-      }
-    }
+async function logUpdateActivity(sessionId, asin, status, message, productId = null) {
+  try {
+    await supabase
+      .from('update_logs')
+      .insert({
+        batch_id: sessionId,
+        product_id: productId,
+        action: status,
+        error_message: status === 'error' ? message : null,
+        created_at: new Date().toISOString()
+      })
+  } catch (error) {
+    console.warn('[LOG] Failed to log activity:', error.message)
   }
-  
-  console.log(`Extracted ${validItems.length} unique valid ASINs`)
-  return validItems
 }
 
-function extractAsinFromRow(row) {
-  // Try multiple column name variations for ASIN/SKU
-  const possibleAsinFields = [
-    'asin', 'sku', 'product_id', 'product_code', 'id', 'item_id',
-    'amazon_asin', 'amazon_sku', 'supplier_sku', 'external_id',
-    'product_asin', 'item_code', 'url', 'product_url'
-  ]
-  
-  for (const field of possibleAsinFields) {
-    if (row[field]) {
-      const asin = extractValidAsin(row[field])
-      if (asin) return asin
-    }
-  }
-  
-  return null
-}
-
-function extractValidAsin(value) {
-  if (!value) return null
-  
-  const cleanValue = value.toString().trim()
-  
-  // Check if it's already a valid 10-character ASIN
-  const asinPattern = /^[A-Z0-9]{10}$/
-  if (asinPattern.test(cleanValue.toUpperCase())) {
-    return cleanValue.toUpperCase()
-  }
-  
-  // Try to extract ASIN from URL
-  const asinPatterns = [
-    /\/dp\/([A-Z0-9]{10})/i,
-    /\/gp\/product\/([A-Z0-9]{10})/i,
-    /asin[=:]([A-Z0-9]{10})/i,
-    /product\/([A-Z0-9]{10})/i
-  ]
-  
-  for (const pattern of asinPatterns) {
-    const match = cleanValue.match(pattern)
-    if (match && match[1]) {
-      return match[1].toUpperCase()
-    }
-  }
-  
-  return null
-}
-
-async function processCsvImportWithScraping(userId, itemList, sessionId) {
-  const results = {
+async function processUpdateBatch(userId, products, sessionId, country, options) {
+  const stats = {
     processed: 0,
-    imported: 0,
     updated: 0,
     failed: 0,
     errors: []
   }
 
-  const startTime = Date.now()
-  console.log(`Starting background processing of ${itemList.length} items for session ${sessionId}`)
-
   try {
-    // Process items in smaller batches to handle rate limiting
-    const batchSize = 3 // Much smaller batches due to strict API rate limits
-    const totalBatches = Math.ceil(itemList.length / batchSize)
+    const batchSize = 10
+    const totalBatches = Math.ceil(products.length / batchSize)
 
     for (let batchIndex = 0; batchIndex < totalBatches; batchIndex++) {
-      const batchStartIndex = batchIndex * batchSize
-      const batchEndIndex = Math.min(batchStartIndex + batchSize, itemList.length)
-      const batch = itemList.slice(batchStartIndex, batchEndIndex)
-      
-      console.log(`Processing batch ${batchIndex + 1}/${totalBatches} (${batch.length} items)`)
-
-      // Process each item in batch sequentially (due to rate limiting)
-      for (const item of batch) {
-        try {
-          const result = await importSingleItemWithScraping(item, userId)
-          results.processed++
-          
-          if (result.isNew) {
-            results.imported++
-          } else {
-            results.updated++
-          }
-
-          console.log(`✓ Processed ${item.asin}: ${result.isNew ? 'Imported' : 'Updated'}`)
-          
-        } catch (error) {
-          console.error(`✗ Failed to import item ${item.asin}:`, error.message)
-          results.failed++
-          results.processed++
-          results.errors.push({
-            asin: item.asin,
-            error: error.message.substring(0, 255)
+      if (cancelFlags.get(sessionId)) {
+        console.log(`[UPDATE-ALL] Session ${sessionId} cancelled`)
+        await supabase
+          .from('update_sessions')
+          .update({
+            status: 'cancelled',
+            completed_at: new Date().toISOString(),
+            processed_products: stats.processed,
+            updated_products: stats.updated,
+            failed_products: stats.failed
           })
+          .eq('id', sessionId)
+        cancelFlags.delete(sessionId)
+        return
+      }
+
+      const batchStart = batchIndex * batchSize
+      const batchEnd = Math.min(batchStart + batchSize, products.length)
+      const batch = products.slice(batchStart, batchEnd)
+      
+      console.log(`[UPDATE-ALL] Batch ${batchIndex + 1}/${totalBatches}`)
+
+      const promises = batch.map(async (product) => {
+        try {
+          await logUpdateActivity(sessionId, product.supplier_asin, 'processing', 'Scraping fresh data')
           
-          // If we're getting rate limited, add extra delay
-          if (error.message.includes('429') || error.message.includes('Too many requests')) {
-            console.log('Rate limit detected, adding extra 10s delay...')
-            await new Promise(resolve => setTimeout(resolve, 10000))
+          let scrapedData
+          if (options.fetchVariants) {
+            scrapedData = await scrapeAmazonProductWithVariants(product.supplier_asin, country, {
+              fetchVariants: true,
+              maxVariants: options.maxVariants,
+              accurateStock: options.accurateStock
+            })
+          } else {
+            scrapedData = await scrapeAmazonProduct(product.supplier_asin, country)
           }
-        }
+          
+          if (!scrapedData || !scrapedData.title) {
+            throw new Error('No valid data returned')
+          }
 
-        // Update progress every 3 items
-        if (results.processed % 3 === 0) {
-          await updateSessionProgress(sessionId, results)
-        }
-      }
+          const metadata = scrapedData.metadata || {}
+          delete scrapedData.metadata
+          
+          if (scrapedData.variants?.has_variations) {
+            const stockSummary = calculateStockSummary(scrapedData.variants)
+            metadata.stock_summary = stockSummary
+          }
 
-      // Add delay between batches to respect rate limits
+          const { error: updateError } = await supabase
+            .from('products')
+            .update({
+              title: truncateString(scrapedData.title, 1000),
+              brand: truncateString(scrapedData.brand, 500),
+              category: typeof scrapedData.category === 'string' 
+                ? truncateString(scrapedData.category, 500)
+                : (scrapedData.category?.name ? truncateString(scrapedData.category.name, 500) : null),
+              image_urls: Array.isArray(scrapedData.image_urls)
+                ? scrapedData.image_urls.map(url => truncateString(url, 1000))
+                : scrapedData.image_urls,
+              description: truncateString(scrapedData.description, 5000),
+              features: Array.isArray(scrapedData.features) 
+                ? scrapedData.features.map(f => truncateString(f, 500))
+                : scrapedData.features,
+              supplier_price: scrapedData.supplier_price,
+              our_price: scrapedData.our_price,
+              currency: truncateString(scrapedData.currency, 3),
+              stock_status: truncateString(scrapedData.stock_status, 50),
+              stock_quantity: scrapedData.stock_quantity,
+              rating_average: scrapedData.rating_average,
+              rating_count: scrapedData.rating_count,
+              shipping_info: cleanShippingInfo(scrapedData.shipping_info),
+              variants: cleanVariants(scrapedData.variants),
+              metadata: metadata,
+              last_scraped: new Date().toISOString(),
+              scrape_errors: 0,
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', product.id)
+
+          if (updateError) throw updateError
+
+          if (product.supplier_price !== scrapedData.supplier_price) {
+            await supabase
+              .from('price_history')
+              .insert({
+                product_id: product.id,
+                supplier_price: scrapedData.supplier_price,
+                our_price: scrapedData.our_price,
+                stock_status: scrapedData.stock_status,
+                recorded_at: new Date().toISOString()
+              })
+              .catch(err => console.warn('[PRICE-HISTORY]:', err.message))
+          }
+
+          stats.processed++
+          stats.updated++
+          await logUpdateActivity(sessionId, product.supplier_asin, 'success', 'Updated', product.id)
+          console.log(`[UPDATE] ✓ ${product.supplier_asin}`)
+
+        } catch (error) {
+          console.error(`[UPDATE] ✗ ${product.supplier_asin}:`, error.message)
+          
+          const newErrorCount = (product.scrape_errors || 0) + 1
+          const shouldDeactivate = newErrorCount >= 10
+
+          await supabase
+            .from('products')
+            .update({
+              scrape_errors: newErrorCount,
+              is_active: !shouldDeactivate,
+              last_scraped: new Date().toISOString()
+            })
+            .eq('id', product.id)
+            .catch(err => console.warn('[ERROR-UPDATE]:', err.message))
+
+          stats.processed++
+          stats.failed++
+          stats.errors.push({
+            asin: product.supplier_asin,
+            error: error.message.substring(0, 100)
+          })
+          await logUpdateActivity(sessionId, product.supplier_asin, 'error', error.message.substring(0, 255))
+        }
+      })
+
+      await Promise.all(promises)
+      
+      await supabase
+        .from('update_sessions')
+        .update({
+          processed_products: stats.processed,
+          updated_products: stats.updated,
+          failed_products: stats.failed
+        })
+        .eq('id', sessionId)
+
       if (batchIndex < totalBatches - 1) {
-        console.log('Waiting 5s between batches...')
-        await new Promise(resolve => setTimeout(resolve, 5000))
-      }
-
-      // Log progress every 2 batches
-      if ((batchIndex + 1) % 2 === 0) {
-        const elapsed = (Date.now() - startTime) / 1000
-        const rate = results.processed / elapsed
-        const remaining = itemList.length - results.processed
-        const eta = remaining / Math.max(rate, 0.1)
-        
-        console.log(`Progress: ${results.processed}/${itemList.length} (${Math.round(results.processed/itemList.length*100)}%) - Rate: ${rate.toFixed(2)}/s - ETA: ${Math.round(eta/60)}min`)
+        await new Promise(resolve => setTimeout(resolve, 1000))
       }
     }
 
-    // Final session update
     await supabase
-      .from('csv_import_sessions')
+      .from('update_sessions')
       .update({
         status: 'completed',
         completed_at: new Date().toISOString(),
-        processed_skus: results.processed,
-        imported_products: results.imported,
-        updated_products: results.updated,
-        failed_skus: results.failed,
-        error_details: results.errors.length > 0 ? results.errors.slice(0, 50) : null
+        processed_products: stats.processed,
+        updated_products: stats.updated,
+        failed_products: stats.failed
       })
       .eq('id', sessionId)
 
-    const elapsed = (Date.now() - startTime) / 1000
-    console.log(`✅ CSV import completed for session ${sessionId}:`, {
-      ...results,
-      timeElapsed: `${Math.round(elapsed)}s`,
-      rate: `${(results.processed / elapsed).toFixed(2)}/s`
-    })
+    cancelFlags.delete(sessionId)
+    console.log('[UPDATE-ALL] Completed:', stats)
 
   } catch (error) {
-    console.error('❌ CSV import background error:', error)
+    console.error('[UPDATE-ALL] Error:', error)
     
     await supabase
-      .from('csv_import_sessions')
+      .from('update_sessions')
       .update({
         status: 'failed',
         completed_at: new Date().toISOString(),
         error_message: error.message,
-        processed_skus: results.processed,
-        imported_products: results.imported,
-        updated_products: results.updated,
-        failed_skus: results.failed
+        processed_products: stats.processed,
+        updated_products: stats.updated,
+        failed_products: stats.failed
       })
       .eq('id', sessionId)
-  }
-}
-
-async function importSingleItemWithScraping(item, userId) {
-  const asin = item.asin
-  console.log(`🔍 Importing ${asin} with real scraping...`)
-
-  try {
-    // Scrape product data from Amazon AU using the API
-    const scrapedData = await scrapeAmazonProduct(asin)
     
-    if (!scrapedData || !scrapedData.title) {
-      throw new Error(`No valid product data found for ${asin}`)
-    }
-
-    // Calculate our price: supplier_price * 1.2 + 0.30
-    const ourPrice = scrapedData.price ? 
-      parseFloat((scrapedData.price * 1.2 + 0.30).toFixed(2)) : null
-    
-    // Check if product exists
-    const { data: existing } = await supabase
-      .from('products')
-      .select('*')
-      .eq('user_id', userId)
-      .eq('supplier_asin', asin)
-      .single()
-
-    const productPayload = {
-      user_id: userId,
-      supplier_sku: asin,
-      supplier_asin: asin,
-      supplier_url: scrapedData.url,
-      supplier_name: 'Amazon AU',
-      title: scrapedData.title,
-      brand: scrapedData.brand,
-      category: scrapedData.category,
-      supplier_price: scrapedData.price,
-      our_price: ourPrice,
-      currency: scrapedData.currency,
-      stock_status: scrapedData.stockStatus,
-      rating_average: scrapedData.rating.average,
-      rating_count: scrapedData.rating.count,
-      image_urls: scrapedData.images,
-      description: scrapedData.description,
-      features: scrapedData.features,
-      is_active: true,
-      last_scraped: new Date().toISOString(),
-      scrape_errors: 0,
-      updated_at: new Date().toISOString()
-    }
-
-    let savedProduct
-    let isNew = false
-
-    if (existing) {
-      // Update existing product
-      const { data: updated, error } = await supabase
-        .from('products')
-        .update({
-          ...productPayload,
-          internal_sku: existing.internal_sku, // Keep existing SKU
-          created_at: existing.created_at // Preserve creation date
-        })
-        .eq('id', existing.id)
-        .select()
-        .single()
-
-      if (error) {
-        console.error('Supabase update error:', error)
-        throw error
-      }
-      savedProduct = updated
-      isNew = false
-
-      // Add price history if price changed
-      if (existing.supplier_price !== scrapedData.price) {
-        await addPriceHistory(existing.id, scrapedData.price, ourPrice, scrapedData.stockStatus)
-      }
-
-    } else {
-      // Insert new product
-      const internalSku = generateInternalSku(asin)
-      productPayload.internal_sku = internalSku
-      productPayload.created_at = new Date().toISOString()
-      
-      const { data: inserted, error } = await supabase
-        .from('products')
-        .insert(productPayload)
-        .select()
-        .single()
-
-      if (error) {
-        console.error('Supabase insert error:', error)
-        throw error
-      }
-      savedProduct = inserted
-      isNew = true
-
-      // Add initial price history
-      await addPriceHistory(inserted.id, scrapedData.price, ourPrice, scrapedData.stockStatus)
-    }
-
-    return {
-      ...savedProduct,
-      isNew
-    }
-
-  } catch (error) {
-    console.error(`❌ Error importing item ${asin}:`, error)
-    throw new Error(`Import failed for ${asin}: ${error.message}`)
+    cancelFlags.delete(sessionId)
   }
 }
 
-function generateInternalSku(asin) {
-  const prefix = 'AMZ'
-  const timestamp = Date.now().toString().slice(-6)
-  return `${prefix}${asin}${timestamp}`
+function truncateString(str, maxLength) {
+  if (!str) return str
+  if (typeof str !== 'string') return str
+  if (str.length <= maxLength) return str
+  return str.substring(0, maxLength - 3) + '...'
 }
 
-async function addPriceHistory(productId, supplierPrice, ourPrice, stockStatus) {
-  try {
-    await supabase
-      .from('price_history')
-      .insert({
-        product_id: productId,
-        supplier_price: supplierPrice,
-        our_price: ourPrice,
-        stock_status: stockStatus,
-        recorded_at: new Date().toISOString()
-      })
-  } catch (error) {
-    console.warn('⚠️ Failed to add price history:', error.message)
+function cleanShippingInfo(shippingInfo) {
+  if (!shippingInfo || typeof shippingInfo !== 'object') return shippingInfo
+  
+  return Object.keys(shippingInfo).reduce((acc, key) => {
+    const value = shippingInfo[key]
+    acc[key] = typeof value === 'string' ? truncateString(value, 500) : value
+    return acc
+  }, {})
+}
+
+function cleanVariants(variants) {
+  if (!variants || !variants.options || !Array.isArray(variants.options)) {
+    return variants
   }
-}
-
-async function updateSessionProgress(sessionId, results) {
-  try {
-    await supabase
-      .from('csv_import_sessions')
-      .update({
-        processed_skus: results.processed,
-        imported_products: results.imported,
-        updated_products: results.updated,
-        failed_skus: results.failed
-      })
-      .eq('id', sessionId)
-  } catch (error) {
-    console.warn('⚠️ Failed to update session progress:', error.message)
+  
+  return {
+    ...variants,
+    options: variants.options.map(variant => ({
+      ...variant,
+      asin: truncateString(variant.asin, 20),
+      title: truncateString(variant.title, 500),
+      value: truncateString(variant.value, 500),
+      dimension_name: truncateString(variant.dimension_name, 200),
+      image_url: truncateString(variant.image_url, 1000)
+    }))
   }
 }

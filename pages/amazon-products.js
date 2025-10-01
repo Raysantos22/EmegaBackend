@@ -1,5 +1,5 @@
-// pages/amazon-products.js - Complete working version
-import { useState, useEffect, useCallback } from 'react'
+// pages/amazon-products.js - With Update Status & Confirmation
+import { useState, useEffect, useCallback, useRef } from 'react'  // Add useRef
 import { useRouter } from 'next/router'
 import { supabase } from '../lib/supabase'
 import DashboardLayout from '../components/DashboardLayout'
@@ -9,6 +9,7 @@ export default function AmazonProductsPage() {
   const [session, setSession] = useState(null)
   const [loading, setLoading] = useState(true)
   const [products, setProducts] = useState([])
+  const abortControllers = useRef(new Map())
   const [notifications, setNotifications] = useState([])
   
   // Import states
@@ -20,30 +21,44 @@ export default function AmazonProductsPage() {
   const [csvFile, setCsvFile] = useState(null)
   const [csvImportStatus, setCsvImportStatus] = useState('idle')
   const [csvImportProgress, setCsvImportProgress] = useState({
-    processed: 0,
-    imported: 0,
-    updated: 0,
-    failed: 0,
-    total: 0,
-    percentage: 0
+    processed: 0, imported: 0, updated: 0, failed: 0, total: 0, percentage: 0
   })
+  const [csvImportDetails, setCsvImportDetails] = useState([])
+  const [showImportModal, setShowImportModal] = useState(false)
   const [currentCsvSession, setCurrentCsvSession] = useState(null)
   
   // Update system states
   const [updateStatus, setUpdateStatus] = useState(null)
+  const [updatingProducts, setUpdatingProducts] = useState(new Set())
+  const [showUpdateConfirm, setShowUpdateConfirm] = useState(false)
+  const [showUpdateModal, setShowUpdateModal] = useState(false) // NEW
+ const [updateProgress, setUpdateProgress] = useState({
+  processed: 0,
+  updated: 0,
+  failed: 0,
+  total: 0,
+  percentage: 0,
+  currentProduct: null,
+  completed: false  // ADD THIS LINE
+})
+const [updateSessionId, setUpdateSessionId] = useState(null) // NEW
+const [updateLogs, setUpdateLogs] = useState([]) // NEW
   
   // Filter and search states
   const [filter, setFilter] = useState('all')
   const [searchTerm, setSearchTerm] = useState('')
   
-  // Delete all states
+  // UI states
+  const [isRefreshing, setIsRefreshing] = useState(false)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [deleteConfirmText, setDeleteConfirmText] = useState('')
   const [isDeleting, setIsDeleting] = useState(false)
+  const [showImportSection, setShowImportSection] = useState(false)
+  const [selectedProducts, setSelectedProducts] = useState([])
+  const [selectAll, setSelectAll] = useState(false)
   
   const router = useRouter()
 
-  // Initialize user session and data
   const checkUser = useCallback(async () => {
     const { data: { session } } = await supabase.auth.getSession()
     if (!session) {
@@ -51,7 +66,6 @@ export default function AmazonProductsPage() {
     } else {
       setSession(session)
       await loadProducts(session.user.id)
-      await loadUpdateStatus()
       await checkCsvImportStatus(session.user.id)
     }
     setLoading(false)
@@ -59,20 +73,17 @@ export default function AmazonProductsPage() {
 
   useEffect(() => {
     checkUser()
-    
     const interval = setInterval(() => {
       if (session?.user?.id) {
-        loadUpdateStatus()
         checkCsvImportStatus(session.user.id)
       }
     }, 10000)
-    
     return () => clearInterval(interval)
   }, [checkUser, session?.user?.id])
 
-  // Load products from database
   const loadProducts = async (userId) => {
     try {
+      setLoading(true)
       const { data: products, error } = await supabase
         .from('products')
         .select('*')
@@ -80,56 +91,59 @@ export default function AmazonProductsPage() {
         .eq('is_active', true)
         .order('updated_at', { ascending: false })
         .limit(1000)
-
       if (error) throw error
       setProducts(products || [])
     } catch (error) {
       console.error('Error loading products:', error)
       addNotification('Failed to load products', 'error')
+    } finally {
+      setLoading(false)
     }
   }
 
-  // Load update batch status
-  const loadUpdateStatus = async () => {
+  const handleRefresh = async () => {
+    if (!session?.user?.id) return
+    setIsRefreshing(true)
+    addNotification('Refreshing products...', 'info')
     try {
-      const { data: batches, error } = await supabase
-        .from('update_batches')
-        .select('*')
-        .order('started_at', { ascending: false })
-        .limit(1)
-
-      if (error) throw error
-      
-      if (batches && batches.length > 0) {
-        setUpdateStatus(batches[0])
-      }
+      await loadProducts(session.user.id)
+      await checkCsvImportStatus(session.user.id)
+      addNotification('Products refreshed successfully', 'success')
     } catch (error) {
-      console.error('Error loading update status:', error)
+      addNotification('Failed to refresh products', 'error')
+    } finally {
+      setIsRefreshing(false)
     }
   }
 
-  // Check CSV import status
   const checkCsvImportStatus = async (userId) => {
     try {
       const response = await fetch(`/api/amazon/csv-import-status?userId=${userId}${currentCsvSession ? `&sessionId=${currentCsvSession}` : ''}`)
       const data = await response.json()
-      
       if (data.success && data.session) {
-        setCsvImportStatus(data.session.status)
+        const previousStatus = csvImportStatus
+        
+        const uiStatus = data.session.status === 'running' ? 'processing' : data.session.status
+        setCsvImportStatus(uiStatus)
         setCsvImportProgress(data.progress)
         
-        if ((data.session.status === 'completed' || data.session.status === 'failed') && 
-            csvImportStatus === 'processing') {
+        if (!currentCsvSession && data.session.id && uiStatus === 'processing') {
+          console.log('[STATUS] Setting current session:', data.session.id)
+          setCurrentCsvSession(data.session.id)
+        }
+        
+        if (currentCsvSession || data.session.id) {
+          fetchImportLogs(currentCsvSession || data.session.id)
+        }
+        
+        if ((uiStatus === 'completed' || uiStatus === 'failed') && previousStatus === 'processing') {
           await loadProducts(userId)
-          
-          if (data.session.status === 'completed') {
-            addNotification(
-              `CSV import completed! Imported: ${data.progress.imported}, Updated: ${data.progress.updated}, Failed: ${data.progress.failed}`,
-              'success'
-            )
-          } else {
-            addNotification('CSV import failed. Check the console for details.', 'error')
+          if (uiStatus === 'completed') {
+            addNotification(`CSV import completed! Imported: ${data.progress.imported}, Updated: ${data.progress.updated}`, 'success')
           }
+          setTimeout(() => {
+            setCurrentCsvSession(null)
+          }, 5000)
         }
       }
     } catch (error) {
@@ -137,21 +151,37 @@ export default function AmazonProductsPage() {
     }
   }
 
-  // Single product import
+  const fetchImportLogs = async (sessionId) => {
+    try {
+      const { data: logs, error } = await supabase
+        .from('import_logs')
+        .select('*')
+        .eq('session_id', sessionId)
+        .order('created_at', { ascending: false })
+        .limit(50)
+      
+      if (!error && logs) {
+        setCsvImportDetails(logs.map(log => ({
+          asin: log.asin,
+          status: log.status,
+          message: log.message,
+          timestamp: log.created_at
+        })))
+      }
+    } catch (error) {
+      console.error('Error fetching import logs:', error)
+    }
+  }
+
   const handleImport = async () => {
     if (!importInput.trim() || !session?.user?.id) return
-
     setImportStatus('importing')
     try {
       const response = await fetch('/api/amazon/import', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          input: importInput.trim(),
-          userId: session.user.id
-        })
+        body: JSON.stringify({ input: importInput.trim(), userId: session.user.id })
       })
-
       const data = await response.json()
       if (response.ok && data.success) {
         setImportInput('')
@@ -167,7 +197,6 @@ export default function AmazonProductsPage() {
     }
   }
 
-  // CSV file handling
   const handleCsvFileChange = (event) => {
     const file = event.target.files[0]
     if (file && file.type === 'text/csv') {
@@ -179,34 +208,25 @@ export default function AmazonProductsPage() {
     }
   }
 
-  // CSV upload
   const handleCsvUpload = async () => {
     if (!csvFile || !session?.user?.id) return
-
     setCsvImportStatus('uploading')
-    
     try {
-      const csvContent = await readFileAsText(csvFile)
+      const csvContent = await csvFile.text()
       setCsvImportStatus('processing')
-      
       const response = await fetch('/api/amazon/bulk-import-csv', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          csvData: csvContent,
-          userId: session.user.id
-        })
+        body: JSON.stringify({ csvData: csvContent, userId: session.user.id })
       })
-
       const data = await response.json()
-      
       if (response.ok && data.success) {
         setCurrentCsvSession(data.sessionId)
         addNotification(`CSV import started for ${data.totalSkus} SKUs`, 'info')
         setCsvFile(null)
-        
         const fileInput = document.getElementById('csv-file-input')
         if (fileInput) fileInput.value = ''
+        setShowImportModal(true)
       } else {
         throw new Error(data.message || 'CSV upload failed')
       }
@@ -216,34 +236,75 @@ export default function AmazonProductsPage() {
     }
   }
 
-  // Read file as text
-  const readFileAsText = (file) => {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader()
-      reader.onload = (e) => resolve(e.target.result)
-      reader.onerror = reject
-      reader.readAsText(file)
-    })
+  const handleCancelImport = async () => {
+    let sessionToCancel = currentCsvSession
+    
+    if (!sessionToCancel) {
+      try {
+        const response = await fetch(`/api/amazon/csv-import-status?userId=${session.user.id}`)
+        const data = await response.json()
+        if (data.success && data.session && data.session.status === 'running') {
+          sessionToCancel = data.session.id
+          setCurrentCsvSession(sessionToCancel)
+        }
+      } catch (error) {
+        console.error('[CANCEL] Error finding session:', error)
+      }
+    }
+    
+    if (!sessionToCancel) {
+      addNotification('No active import to cancel', 'error')
+      return
+    }
+    
+    if (!confirm('Are you sure you want to cancel this import?')) {
+      return
+    }
+    
+    try {
+      const response = await fetch('/api/amazon/bulk-import-csv', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId: sessionToCancel })
+      })
+      
+      const data = await response.json()
+      
+      if (response.ok && data.success) {
+        addNotification('Import cancelled successfully', 'success')
+        setCsvImportStatus('cancelled')
+        setTimeout(async () => {
+          await loadProducts(session.user.id)
+          setShowImportModal(false)
+          setCurrentCsvSession(null)
+        }, 1000)
+      } else {
+        throw new Error(data.message || data.error || 'Cancel failed')
+      }
+    } catch (error) {
+      addNotification(`Failed to cancel: ${error.message}`, 'error')
+    }
   }
 
-  // Update single product
   const handleUpdateSingleProduct = async (productId) => {
     const product = products.find(p => p.id === productId)
     if (!product) return
-
+    
+    if (!confirm(`Update product ${product.supplier_asin}?\n\nThis will scrape fresh data from Amazon.`)) {
+      return
+    }
+    
     try {
+      setUpdatingProducts(prev => new Set(prev).add(productId))
       addNotification('Updating product...', 'info')
       
       const response = await fetch('/api/amazon/update-single-product', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          productId: product.id,
-          asin: product.supplier_asin
-        })
+        body: JSON.stringify({ productId: product.id, asin: product.supplier_asin })
       })
-
       const data = await response.json()
+      
       if (response.ok && data.success) {
         await loadProducts(session.user.id)
         addNotification('Product updated successfully', 'success')
@@ -252,53 +313,154 @@ export default function AmazonProductsPage() {
       }
     } catch (error) {
       addNotification(`Update failed: ${error.message}`, 'error')
-    }
-  }
-
-  // Trigger hourly update
-  const triggerUpdate = async () => {
-    try {
-      const response = await fetch('/api/amazon/update-hourly', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' }
+    } finally {
+      setUpdatingProducts(prev => {
+        const newSet = new Set(prev)
+        newSet.delete(productId)
+        return newSet
       })
-
-      const data = await response.json()
-      if (response.ok && data.success) {
-        addNotification('Update process started', 'info')
-        setTimeout(loadUpdateStatus, 1000)
-      } else {
-        throw new Error(data.message || 'Update failed to start')
-      }
-    } catch (error) {
-      addNotification(`Update failed: ${error.message}`, 'error')
     }
   }
 
-  // Delete all products
+  const triggerUpdate = () => {
+    setShowUpdateConfirm(true)
+  }
+
+  const confirmUpdate = async () => {
+  setShowUpdateConfirm(false)
+  
+  try {
+    addNotification('Starting update process...', 'info')
+    
+    const response = await fetch('/api/amazon/update-hourly', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: session.user.id })
+    })
+    const data = await response.json()
+    
+    if (response.ok && data.success) {
+      // IMPORTANT: Make sure you're setting the session ID correctly
+      const sessionId = data.sessionId
+      console.log('[FRONTEND] Update started with session ID:', sessionId) // Debug log
+      
+      setUpdateSessionId(sessionId)
+      setUpdateProgress({
+        processed: 0,
+        updated: 0,
+        failed: 0,
+        total: data.totalProducts,
+        percentage: 0,
+        completed: false
+      })
+      setShowUpdateModal(true)
+      addNotification(`Update started for ${data.totalProducts} products`, 'info')
+      
+      // Start polling immediately with the session ID
+      const pollInterval = setInterval(async () => {
+        await checkUpdateStatus(sessionId, pollInterval)
+      }, 3000) // Poll every 3 seconds instead of 5 for faster updates
+      
+    } else {
+      throw new Error(data.message || 'Update failed')
+    }
+  } catch (error) {
+    addNotification(`Update failed: ${error.message}`, 'error')
+  }
+}
+const checkUpdateStatus = async (sessionId, pollInterval) => {
+  try {
+    const response = await fetch(`/api/amazon/update-status?userId=${session.user.id}&sessionId=${sessionId}`)
+    const data = await response.json()
+    
+    if (data.success && data.session) {
+      setUpdateProgress({
+        ...data.progress,
+        completed: data.session.status === 'completed'
+      })
+      
+      // Fetch logs from update_logs table using batch_id
+      const { data: logs, error: logsError } = await supabase
+        .from('update_logs')
+        .select(`
+          *,
+          products!update_logs_product_id_fkey(supplier_asin)
+        `)
+        .eq('batch_id', sessionId)
+        .order('created_at', { ascending: false })
+        .limit(50)
+      
+      if (logs && !logsError) {
+        // Transform logs to match your display format
+        setUpdateLogs(logs.map(log => ({
+          asin: log.products?.supplier_asin || 'Unknown',
+          status: log.action,
+          message: log.error_message || 'Updated successfully',
+          created_at: log.created_at
+        })))
+      }
+      
+      if (data.session.status === 'completed' || data.session.status === 'cancelled' || data.session.status === 'failed') {
+        clearInterval(pollInterval)
+        await loadProducts(session.user.id)
+        
+        if (data.session.status === 'completed') {
+          addNotification(`Update completed! Updated: ${data.progress.updated}`, 'success')
+        }
+      }
+    }
+  } catch (error) {
+    console.error('Error checking update status:', error)
+  }
+}
+const handleCancelUpdate = async () => {
+  if (!updateSessionId) {
+    addNotification('No active update to cancel', 'error')
+    return
+  }
+  
+  if (!confirm('Are you sure you want to cancel this update?')) {
+    return
+  }
+  
+  try {
+    const response = await fetch('/api/amazon/update-hourly', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId: updateSessionId })
+    })
+    
+    const data = await response.json()
+    
+    if (response.ok && data.success) {
+      addNotification('Update cancelled successfully', 'success')
+      setTimeout(async () => {
+        await loadProducts(session.user.id)
+        setShowUpdateModal(false)
+        setUpdateSessionId(null)
+      }, 1000)
+    } else {
+      throw new Error(data.message || 'Cancel failed')
+    }
+  } catch (error) {
+    addNotification(`Failed to cancel: ${error.message}`, 'error')
+  }
+}
   const handleDeleteAll = async () => {
     if (deleteConfirmText !== 'DELETE_ALL_PRODUCTS') {
       addNotification('Please type "DELETE_ALL_PRODUCTS" to confirm', 'error')
       return
     }
-
     setIsDeleting(true)
     try {
       const response = await fetch('/api/amazon/delete-all-products', {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          userId: session.user.id,
-          confirmDelete: 'DELETE_ALL_PRODUCTS'
-        })
+        body: JSON.stringify({ userId: session.user.id, confirmDelete: 'DELETE_ALL_PRODUCTS' })
       })
-
       const data = await response.json()
       if (response.ok && data.success) {
-        addNotification(
-          `Successfully deleted ${data.deletedCounts.products} products and ${data.deletedCounts.total} total records`, 
-          'success'
-        )
+        addNotification(`Successfully deleted ${data.deletedCounts.products} products`, 'success')
         await loadProducts(session.user.id)
         setShowDeleteConfirm(false)
         setDeleteConfirmText('')
@@ -312,23 +474,27 @@ export default function AmazonProductsPage() {
     }
   }
 
-  // Add notification
+  const handleSelectAll = () => {
+    if (selectAll) {
+      setSelectedProducts([])
+    } else {
+      setSelectedProducts(filteredProducts.map(p => p.id))
+    }
+    setSelectAll(!selectAll)
+  }
+
+  const handleSelectProduct = (productId) => {
+    setSelectedProducts(prev => 
+      prev.includes(productId) ? prev.filter(id => id !== productId) : [...prev, productId]
+    )
+  }
+
   const addNotification = (message, type = 'info') => {
-    const notification = { id: Date.now(), message, type, timestamp: new Date().toISOString() }
+    const notification = { id: Date.now(), message, type }
     setNotifications(prev => [notification, ...prev.slice(0, 4)])
     setTimeout(() => {
       setNotifications(prev => prev.filter(n => n.id !== notification.id))
     }, 5000)
-  }
-
-  // Helper functions
-  const parseFeatures = (features) => {
-    try {
-      if (!features) return []
-      return JSON.parse(features)
-    } catch (e) {
-      return []
-    }
   }
 
   const filteredProducts = products.filter(product => {
@@ -336,45 +502,84 @@ export default function AmazonProductsPage() {
       (filter === 'in_stock' && product.stock_status === 'In Stock') ||
       (filter === 'out_of_stock' && product.stock_status === 'Out of Stock') ||
       (filter === 'limited_stock' && product.stock_status === 'Limited Stock')
-    
     const matchesSearch = !searchTerm || 
       product.title?.toLowerCase().includes(searchTerm.toLowerCase()) ||
       product.internal_sku?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      product.supplier_asin?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (product.brand && product.brand.toLowerCase().includes(searchTerm.toLowerCase()))
-
+      product.supplier_asin?.toLowerCase().includes(searchTerm.toLowerCase())
     return matchesFilter && matchesSearch
   })
 
-  const getUpdateProgress = () => {
-    if (!updateStatus || updateStatus.total_products === 0) return 0
-    return Math.round((updateStatus.processed_products / updateStatus.total_products) * 100)
+  const hasVariants = (product) => {
+    if (product.metadata?.variation_count && product.metadata.variation_count > 1) {
+      return true
+    }
+    
+    try {
+      const features = product.features
+      if (Array.isArray(features) && features.length > 1) {
+        return true
+      }
+      if (typeof features === 'string') {
+        const parsed = JSON.parse(features)
+        return Array.isArray(parsed) && parsed.length > 1
+      }
+    } catch (e) {}
+    
+    return false
   }
 
-  const getStatusColor = (status) => {
-    switch (status) {
-      case 'In Stock': return 'bg-green-100 text-green-800'
-      case 'Out of Stock': return 'bg-red-100 text-red-800'
-      case 'Limited Stock': return 'bg-yellow-100 text-yellow-800'
-      default: return 'bg-gray-100 text-gray-800'
+  const getVariantStockSummary = (product) => {
+    try {
+      const variantsData = typeof product.variants === 'string' 
+        ? JSON.parse(product.variants) 
+        : product.variants
+
+      if (!variantsData?.options || !Array.isArray(variantsData.options)) {
+        return {
+          available: product.stock_status === 'In Stock' ? 1 : 0,
+          onHold: product.stock_status === 'Limited Stock' ? 1 : 0,
+          outOfStock: product.stock_status === 'Out of Stock' ? 1 : 0
+        }
+      }
+
+      let available = 0
+      let onHold = 0
+      let outOfStock = 0
+
+      variantsData.options.forEach(variant => {
+        if (!variant.stock_status || variant.stock_status === 'Out of Stock' || variant.stock_status === 'Unknown') {
+          outOfStock++
+        } else if (variant.stock_status === 'Limited Stock') {
+          onHold++
+        } else if (variant.stock_status === 'In Stock') {
+          available++
+        }
+      })
+
+      return { available, onHold, outOfStock }
+    } catch (error) {
+      return {
+        available: product.stock_status === 'In Stock' ? 1 : 0,
+        onHold: product.stock_status === 'Limited Stock' ? 1 : 0,
+        outOfStock: product.stock_status === 'Out of Stock' ? 1 : 0
+      }
     }
   }
 
-  const formatPrice = (price) => {
-    return price ? `$${parseFloat(price).toFixed(2)}` : 'N/A'
-  }
-
-  const getProfit = (supplierPrice, ourPrice) => {
-    if (!supplierPrice || !ourPrice) return 'N/A'
-    const profit = ourPrice - supplierPrice
-    return `$${profit.toFixed(2)}`
+  const handleProductClick = (product) => {
+    if (hasVariants(product)) {
+      router.push(`/products/${product.id}`)
+    } else {
+      const url = product.supplier_url || `https://amazon.com.au/dp/${product.supplier_asin}`
+      window.open(url, '_blank', 'noopener,noreferrer')
+    }
   }
 
   if (loading) {
     return (
       <DashboardLayout session={session} supabase={supabase} currentPage="amazon-products">
         <div className="flex items-center justify-center h-64">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-red-600"></div>
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600"></div>
         </div>
       </DashboardLayout>
     )
@@ -382,490 +587,970 @@ export default function AmazonProductsPage() {
 
   return (
     <DashboardLayout session={session} supabase={supabase} currentPage="amazon-products">
-      <div className="space-y-6">
-        {/* Notifications */}
+      <div className="h-full bg-gray-50">
+      {/* Toast Notifications */}
         {notifications.length > 0 && (
           <div className="fixed top-4 right-4 z-50 space-y-2">
             {notifications.map((notification) => (
-              <div
-                key={notification.id}
-                className={`p-4 rounded-lg shadow-lg border max-w-sm ${
-                  notification.type === 'success' ? 'bg-green-50 border-green-200 text-green-800' :
-                  notification.type === 'error' ? 'bg-red-50 border-red-200 text-red-800' :
-                  notification.type === 'warning' ? 'bg-yellow-50 border-yellow-200 text-yellow-800' :
-                  'bg-blue-50 border-blue-200 text-blue-800'
-                }`}
-              >
+              <div key={notification.id} className={`p-3 rounded-lg shadow-lg border backdrop-blur-sm ${
+                notification.type === 'success' ? 'bg-green-50/95 border-green-200 text-green-800' :
+                notification.type === 'error' ? 'bg-red-50/95 border-red-200 text-red-800' :
+                'bg-blue-50/95 border-blue-200 text-blue-800'
+              }`}>
                 <p className="text-sm font-medium">{notification.message}</p>
               </div>
             ))}
           </div>
         )}
-
-        {/* Header */}
-        <div className="bg-white rounded-lg shadow-sm border border-gray-100 p-6">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center space-x-4">
-              <div className="w-12 h-12 bg-orange-100 rounded-lg flex items-center justify-center">
-                <span className="text-xl font-bold text-orange-600">A</span>
-              </div>
-              <div>
-                <h1 className="text-2xl font-bold text-gray-900">Amazon AU Products ({products.length})</h1>
-                <p className="text-gray-600 mt-1">Profit Formula: (Price × 1.2) + $0.30</p>
-              </div>
-            </div>
-            
-            <div className="flex items-center space-x-4">
-              <button
-                onClick={triggerUpdate}
-                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm"
-              >
-                Manual Update
-              </button>
-              
-              {products.length > 0 && (
-                <button
-                  onClick={() => setShowDeleteConfirm(true)}
-                  className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 text-sm"
+        {/* Live Activity Dashboard - Shows during processing AND briefly after completion */}
+          {(
+    csvImportStatus === 'processing' || 
+    (updateSessionId && updateProgress.total > 0) ||
+    csvImportStatus === 'completed' ||
+    updateProgress.completed
+  ) && (
+          <div className="fixed top-0 left-0 right-0 z-40 bg-white border-b border-gray-200 shadow-sm">
+            <div className="max-w-7xl mx-auto px-6 py-3">
+              <div className="space-y-2">
+                <button 
+                  onClick={() => {
+                    if (csvImportStatus === 'processing') setShowImportModal(true)
+                    if (updateSessionId) setShowUpdateModal(true)
+                  }}
+                  className="text-xs text-blue-600 hover:text-blue-700 font-medium"
                 >
-                  Delete All Products
-                </button>
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* Import Section */}
-        <div className="bg-white rounded-lg shadow-sm border border-gray-100 p-6">
-          <h2 className="text-lg font-semibold text-gray-900 mb-6">Import Amazon AU Products</h2>
-          
-          {/* Tabs */}
-          <div className="flex space-x-1 bg-gray-100 rounded-lg p-1 mb-6">
-            <button
-              onClick={() => {
-                setActiveTab('single')
-                setImportInput('')
-                setCsvFile(null)
-                setCsvImportStatus('idle')
-              }}
-              className={`flex-1 px-4 py-2 text-sm font-medium rounded-md transition-colors ${
-                activeTab === 'single' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
-              }`}
-            >
-              Single Import
-            </button>
-            <button
-              onClick={() => {
-                setActiveTab('csv')
-                setImportInput('')
-              }}
-              className={`flex-1 px-4 py-2 text-sm font-medium rounded-md transition-colors ${
-                activeTab === 'csv' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
-              }`}
-            >
-              CSV Bulk Import
-            </button>
-          </div>
-
-          {/* Single Import */}
-          {activeTab === 'single' && (
-            <div className="space-y-4">
-              <div className="flex space-x-3">
-                <input
-                  type="text"
-                  value={importInput}
-                  onChange={(e) => setImportInput(e.target.value)}
-                  placeholder="Enter Amazon AU URL, ASIN, or search term..."
-                  className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                  disabled={importStatus === 'importing'}
-                />
-                <button
-                  onClick={handleImport}
-                  disabled={!importInput.trim() || importStatus === 'importing'}
-                  className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {importStatus === 'importing' ? 'Importing...' : 'Import'}
+                  View Details
                 </button>
               </div>
-              
-              <p className="text-sm text-gray-500">
-                Enter Amazon AU product URL, ASIN (10-character code), or search term to find and import products.
-              </p>
-            </div>
-          )}
 
-          {/* CSV Import */}
-          {activeTab === 'csv' && (
-            <div className="space-y-4">
-              <div className="flex items-center space-x-4">
-                <input
-                  id="csv-file-input"
-                  type="file"
-                  accept=".csv"
-                  onChange={handleCsvFileChange}
-                  className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
-                  disabled={csvImportStatus === 'processing'}
-                />
-                
-                {csvFile && csvImportStatus === 'idle' && (
-                  <button
-                    onClick={handleCsvUpload}
-                    className="px-6 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 whitespace-nowrap"
-                  >
-                    Upload CSV
-                  </button>
+              <div className="space-y-3">
+                {/* CSV Import Activity */}
+                {(csvImportStatus === 'processing' || csvImportStatus === 'completed') && (
+                  <div className={`border rounded-lg p-4 ${
+                    csvImportStatus === 'completed' 
+                      ? 'bg-green-50 border-green-200' 
+                      : 'bg-blue-50 border-blue-200'
+                  }`}>
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-3">
+                        {csvImportStatus === 'processing' ? (
+                          <div className="relative">
+                            <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></div>
+                            <div className="absolute inset-0 w-2 h-2 bg-blue-500 rounded-full animate-ping"></div>
+                          </div>
+                        ) : (
+                          <svg className="w-5 h-5 text-green-600" fill="currentColor" viewBox="0 0 20 20">
+                            <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                          </svg>
+                        )}
+                        <div>
+                          <div className={`text-sm font-semibold ${
+                            csvImportStatus === 'completed' ? 'text-green-900' : 'text-blue-900'
+                          }`}>
+                            {csvImportStatus === 'completed' ? 'CSV Import Completed' : 'CSV Import Running'}
+                          </div>
+                          <div className={`text-xs ${
+                            csvImportStatus === 'completed' ? 'text-green-700' : 'text-blue-700'
+                          }`}>
+                            {csvImportProgress.processed}/{csvImportProgress.total} products • {csvImportProgress.percentage}% complete
+                          </div>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => setShowImportModal(true)}
+                          className={`px-3 py-1 text-xs font-medium rounded ${
+                            csvImportStatus === 'completed'
+                              ? 'text-green-700 bg-green-100 hover:bg-green-200'
+                              : 'text-blue-700 bg-blue-100 hover:bg-blue-200'
+                          }`}
+                        >
+                          Details
+                        </button>
+                        {csvImportStatus === 'processing' && (
+                          <button
+                            onClick={handleCancelImport}
+                            className="px-3 py-1 text-xs font-medium text-red-700 bg-red-100 rounded hover:bg-red-200"
+                          >
+                            Cancel
+                          </button>
+                        )}
+                       {csvImportStatus === 'completed' && (
+                          <button
+                            onClick={() => {
+                              // Add session to dismissed list
+                              if (currentCsvSession) {
+                                setDismissedCsvSessions(prev => new Set(prev).add(currentCsvSession))
+                              }
+                              setCsvImportStatus('idle')
+                              setCsvImportProgress({ processed: 0, imported: 0, updated: 0, failed: 0, total: 0, percentage: 0 })
+                              setCurrentCsvSession(null)
+                              setCsvImportDetails([])
+                            }}
+                            className="text-xs text-gray-500 hover:text-gray-700"
+                          >
+                            ✕
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    {csvImportStatus === 'processing' && (
+                      <>
+                        <div className="w-full bg-blue-200 rounded-full h-2">
+                          <div 
+                            className="bg-blue-600 h-2 rounded-full transition-all duration-500"
+                            style={{ width: `${csvImportProgress.percentage}%` }}
+                          ></div>
+                        </div>
+                        <div className="flex items-center justify-between mt-2 text-xs text-blue-700">
+                          <span>Imported: {csvImportProgress.imported} • Updated: {csvImportProgress.updated}</span>
+                          <span>Failed: {csvImportProgress.failed}</span>
+                        </div>
+                      </>
+                    )}
+                    {csvImportStatus === 'completed' && (
+                      <div className="mt-2 text-xs text-green-700">
+                        ✓ Imported: {csvImportProgress.imported} • Updated: {csvImportProgress.updated} • Failed: {csvImportProgress.failed}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Update Activity */}
+                {updateSessionId && updateProgress.total > 0 && (
+                  <div className={`border rounded-lg p-4 ${
+                    updateProgress.completed
+                      ? 'bg-green-50 border-green-200' 
+                      : 'bg-green-50 border-green-200'
+                  }`}>
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-3">
+                        {!updateProgress.completed ? (
+                          <div className="relative">
+                            <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+                            <div className="absolute inset-0 w-2 h-2 bg-green-500 rounded-full animate-ping"></div>
+                          </div>
+                        ) : (
+                          <svg className="w-5 h-5 text-green-600" fill="currentColor" viewBox="0 0 20 20">
+                            <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                          </svg>
+                        )}
+                        <div>
+                          <div className="text-sm font-semibold text-green-900">
+                            {updateProgress.completed ? 'Product Update Completed' : 'Product Update Running'}
+                          </div>
+                          <div className="text-xs text-green-700">
+                            {updateProgress.processed}/{updateProgress.total} products • {updateProgress.percentage}% complete
+                          </div>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => setShowUpdateModal(true)}
+                          className="px-3 py-1 text-xs font-medium text-green-700 bg-green-100 rounded hover:bg-green-200"
+                        >
+                          Details
+                        </button>
+                        {!updateProgress.completed ? (
+                          <button
+                            onClick={handleCancelUpdate}
+                            className="px-3 py-1 text-xs font-medium text-red-700 bg-red-100 rounded hover:bg-red-200"
+                          >
+                            Cancel
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => {
+                              setUpdateProgress({ processed: 0, updated: 0, failed: 0, total: 0, percentage: 0, completed: false })
+                              setUpdateSessionId(null)
+                            }}
+                            className="text-xs text-gray-500 hover:text-gray-700"
+                          >
+                            ✕
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    {!updateProgress.completed && (
+                      <>
+                        <div className="w-full bg-green-200 rounded-full h-2">
+                          <div 
+                            className="bg-green-600 h-2 rounded-full transition-all duration-500"
+                            style={{ width: `${updateProgress.percentage}%` }}
+                          ></div>
+                        </div>
+                        <div className="flex items-center justify-between mt-2 text-xs text-green-700">
+                          <span>Updated: {updateProgress.updated}</span>
+                          <span>Failed: {updateProgress.failed}</span>
+                        </div>
+                      </>
+                    )}
+                    {updateProgress.completed && (
+                      <div className="mt-2 text-xs text-green-700">
+                        ✓ Updated: {updateProgress.updated} • Failed: {updateProgress.failed}
+                      </div>
+                    )}
+                  </div>
                 )}
               </div>
-
-              {csvFile && (
-                <div className="text-sm text-gray-600">
-                  Selected file: <span className="font-medium">{csvFile.name}</span> 
-                  ({(csvFile.size / 1024).toFixed(1)} KB)
-                </div>
-              )}
-
-              {/* CSV Progress */}
-              {csvImportStatus === 'processing' && (
-                <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-                  <div className="flex items-center justify-between mb-2">
-                    <h3 className="text-sm font-medium text-blue-800">CSV Import in Progress</h3>
-                    <span className="text-sm text-blue-600">{csvImportProgress.percentage}%</span>
-                  </div>
-                  
-                  <div className="w-full bg-blue-200 rounded-full h-2 mb-3">
-                    <div
-                      className="bg-blue-600 h-2 rounded-full transition-all duration-300"
-                      style={{ width: `${csvImportProgress.percentage}%` }}
-                    ></div>
-                  </div>
-                  
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-                    <div>
-                      <span className="text-gray-600">Processed:</span>
-                      <span className="ml-1 font-medium text-blue-800">
-                        {csvImportProgress.processed} / {csvImportProgress.total}
-                      </span>
-                    </div>
-                    <div>
-                      <span className="text-gray-600">Imported:</span>
-                      <span className="ml-1 font-medium text-green-600">{csvImportProgress.imported}</span>
-                    </div>
-                    <div>
-                      <span className="text-gray-600">Updated:</span>
-                      <span className="ml-1 font-medium text-yellow-600">{csvImportProgress.updated}</span>
-                    </div>
-                    <div>
-                      <span className="text-gray-600">Failed:</span>
-                      <span className="ml-1 font-medium text-red-600">{csvImportProgress.failed}</span>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              <div className="text-sm text-gray-500 space-y-1">
-                <p><strong>CSV Format:</strong> Upload a CSV file with product SKUs/ASINs</p>
-                <p><strong>Required column:</strong> sku, asin, product_id, or id</p>
-                <p><strong>Optional columns:</strong> title, brand, category, price</p>
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Update Status */}
-        {updateStatus && (
-          <div className="bg-white rounded-lg shadow-sm border border-gray-100 p-6">
-            <h2 className="text-lg font-semibold text-gray-900 mb-4">Update Status</h2>
-            
-            <div className="space-y-4">
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-gray-600">Status:</span>
-                <span className={`px-3 py-1 rounded-full text-sm font-medium ${
-                  updateStatus.status === 'completed' ? 'bg-green-100 text-green-800' :
-                  updateStatus.status === 'running' ? 'bg-blue-100 text-blue-800' :
-                  updateStatus.status === 'failed' ? 'bg-red-100 text-red-800' :
-                  'bg-gray-100 text-gray-800'
-                }`}>
-                  {updateStatus.status}
-                </span>
-              </div>
-
-              {updateStatus.status === 'running' && (
-                <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-sm text-gray-600">Progress:</span>
-                    <span className="text-sm text-gray-900">{getUpdateProgress()}%</span>
-                  </div>
-                  <div className="w-full bg-gray-200 rounded-full h-2">
-                    <div
-                      className="bg-blue-600 h-2 rounded-full transition-all duration-300"
-                      style={{ width: `${getUpdateProgress()}%` }}
-                    ></div>
-                  </div>
-                  <div className="mt-2 text-sm text-gray-600">
-                    {updateStatus.processed_products || 0} / {updateStatus.total_products || 0} products processed
-                  </div>
-                </div>
-              )}
-
-              {updateStatus.status === 'completed' && (
-                <div className="grid grid-cols-3 gap-4 text-sm">
-                  <div>
-                    <span className="text-gray-600">Processed:</span>
-                    <span className="ml-1 font-medium">{updateStatus.processed_products || 0}</span>
-                  </div>
-                  <div>
-                    <span className="text-gray-600">Updated:</span>
-                    <span className="ml-1 font-medium text-green-600">{updateStatus.updated_products || 0}</span>
-                  </div>
-                  <div>
-                    <span className="text-gray-600">Failed:</span>
-                    <span className="ml-1 font-medium text-red-600">{updateStatus.failed_products || 0}</span>
-                  </div>
-                </div>
-              )}
             </div>
           </div>
         )}
 
-        {/* Filters */}
-        <div className="bg-white rounded-lg shadow-sm border border-gray-100 p-6">
-          <div className="flex flex-col md:flex-row md:items-center md:justify-between space-y-4 md:space-y-0">
-            <div className="flex-1 max-w-md">
+        {/* Add padding when dashboard is visible */}
+        <div className={`${(csvImportStatus === 'processing' || updateSessionId) ? 'pt-32' : ''}`}></div>
+        <div className="bg-white">
+          {/* Header */}
+          <div className="px-6 py-4 border-b border-gray-200">
+            <div className="flex items-center justify-between">
+              <h1 className="text-xl font-semibold text-gray-900">
+                Products <span className="text-gray-400 font-normal">({products.length.toLocaleString()})</span>
+              </h1>
+              <div className="flex items-center gap-2">
+                <button 
+                  onClick={handleRefresh} 
+                  disabled={isRefreshing} 
+                  className="px-3 py-1.5 text-sm text-gray-600 hover:text-gray-900 disabled:opacity-50"
+                >
+                  <svg className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                  </svg>
+                </button>
+                <button 
+                  onClick={() => setShowImportSection(!showImportSection)} 
+                  className="px-4 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded hover:bg-gray-50"
+                >
+                  Import
+                </button>
+                <button 
+                  onClick={triggerUpdate} 
+                  disabled={updateStatus?.status === 'running'}
+                  className="px-4 py-1.5 text-sm font-medium text-white bg-blue-600 rounded hover:bg-blue-700 disabled:opacity-50"
+                >
+                  {updateStatus?.status === 'running' ? 'Updating...' : 'Update All'}
+                </button>
+                {products.length > 0 && (
+                  <button 
+                    onClick={() => setShowDeleteConfirm(true)} 
+                    className="px-4 py-1.5 text-sm font-medium text-red-600 hover:text-red-700"
+                  >
+                    Delete All
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Import Section */}
+          {showImportSection && (
+            <div className="border-b border-gray-200 bg-gray-50 px-6 py-4">
+              <div className="max-w-2xl space-y-4">
+                <div>
+                  <label className="block text-xs font-medium text-gray-700 mb-1.5">Single Import</label>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={importInput}
+                      onChange={(e) => setImportInput(e.target.value)}
+                      placeholder="Enter Amazon ASIN or URL"
+                      className="flex-1 px-3 py-1.5 text-sm border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 focus:border-transparent"
+                      disabled={importStatus === 'importing'}
+                    />
+                    <button 
+                      onClick={handleImport} 
+                      disabled={!importInput.trim() || importStatus === 'importing'} 
+                      className="px-4 py-1.5 text-sm font-medium text-white bg-blue-600 rounded hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {importStatus === 'importing' ? 'Importing...' : 'Import'}
+                    </button>
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-700 mb-1.5">CSV Bulk Import</label>
+                  <div className="flex items-center gap-3">
+                    <input 
+                      id="csv-file-input" 
+                      type="file" 
+                      accept=".csv" 
+                      onChange={handleCsvFileChange} 
+                      disabled={csvImportStatus === 'processing'} 
+                      className="text-sm"
+                    />
+                    {csvFile && csvImportStatus === 'idle' && (
+                      <button 
+                        onClick={handleCsvUpload} 
+                        className="px-4 py-1.5 text-sm font-medium text-white bg-green-600 rounded hover:bg-green-700"
+                      >
+                        Upload
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Filters */}
+          <div className="px-6 py-3 border-b border-gray-200 bg-white">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-4">
+                <select 
+                  value={filter} 
+                  onChange={(e) => setFilter(e.target.value)} 
+                  className="text-sm border-gray-300 rounded focus:ring-1 focus:ring-blue-500"
+                >
+                  <option value="all">All Products</option>
+                  <option value="in_stock">In Stock</option>
+                  <option value="limited_stock">Limited Stock</option>
+                  <option value="out_of_stock">Out of Stock</option>
+                </select>
+                {selectedProducts.length > 0 && (
+                  <span className="text-sm text-gray-500">{selectedProducts.length} selected</span>
+                )}
+              </div>
               <input
                 type="text"
                 placeholder="Search products..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                className="px-3 py-1.5 text-sm border border-gray-300 rounded w-64 focus:ring-1 focus:ring-blue-500"
               />
             </div>
-
-            <div className="flex items-center space-x-4">
-              <select
-                value={filter}
-                onChange={(e) => setFilter(e.target.value)}
-                className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-              >
-                <option value="all">All Products</option>
-                <option value="in_stock">In Stock</option>
-                <option value="out_of_stock">Out of Stock</option>
-                <option value="limited_stock">Limited Stock</option>
-              </select>
-            </div>
-          </div>
-        </div>
-
-        {/* Products Table */}
-        <div className="bg-white rounded-lg shadow-sm border border-gray-100 overflow-hidden">
-          <div className="px-6 py-4 border-b border-gray-100">
-            <h2 className="text-lg font-semibold text-gray-900">
-              Products ({filteredProducts.length})
-            </h2>
           </div>
 
+          {/* Products Table */}
           {filteredProducts.length === 0 ? (
-            <div className="p-12 text-center">
-              <div className="w-16 h-16 mx-auto mb-4 bg-gray-100 rounded-lg flex items-center justify-center">
-                <span className="text-2xl text-gray-400">📦</span>
-              </div>
-              <h3 className="text-lg font-medium text-gray-900 mb-2">No products found</h3>
-              <p className="text-gray-600 mb-4">
-                {searchTerm || filter !== 'all' ? 
-                  'No products match your current filters.' : 
-                  'Import your first Amazon AU product to get started.'
-                }
+            <div className="bg-white py-16 text-center">
+              <svg className="mx-auto h-12 w-12 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" />
+              </svg>
+              <h3 className="mt-3 text-sm font-medium text-gray-900">No products found</h3>
+              <p className="mt-1 text-sm text-gray-500">
+                {searchTerm || filter !== 'all' ? 'Try adjusting your filters' : 'Get started by importing your first product'}
               </p>
             </div>
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full">
+              <table className="min-w-full divide-y divide-gray-200">
                 <thead className="bg-gray-50">
                   <tr>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Product</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">SKU/ASIN</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Supplier Price</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Our Price</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Profit</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Stock</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Rating</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                    <th className="w-8 px-4 py-2">
+                      <input 
+                        type="checkbox" 
+                        checked={selectAll} 
+                        onChange={handleSelectAll} 
+                        className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                      />
+                    </th>
+                    <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Product</th>
+                    <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Uploaded</th>
+                    <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Last Updated</th>
+                    <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                    <th className="px-4 py-2 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Stock</th>
+                    <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Price</th>
+                    <th className="px-4 py-2 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
                   </tr>
                 </thead>
-                <tbody className="bg-white divide-y divide-gray-200">
-                  {filteredProducts.map((product) => {
-                    const features = parseFeatures(product.features)
-                    return (
-                      <tr key={product.id} className="hover:bg-gray-50">
-                        <td className="px-6 py-4">
-                          <div className="flex items-center">
-                            <img
-                              src={product.image_urls?.[0] || '/placeholder-product.png'}
-                              alt={product.title}
-                              className="w-12 h-12 rounded-lg object-cover mr-3"
-                              onError={(e) => {
-                                e.target.src = `https://via.placeholder.com/48x48/f0f0f0/666?text=${product.supplier_asin?.slice(-3) || '?'}`
-                              }}
-                            />
-                            <div className="flex-1 min-w-0">
-                              <div className="text-sm font-medium text-gray-900 truncate max-w-xs">
-                                {product.title}
-                              </div>
-                              <div className="text-sm text-gray-500 flex items-center space-x-2">
-                                <span>{product.brand}</span>
-                                {features.length > 0 && (
-                                  <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800">
-                                    {features.length > 1 ? 'Multiple Variants' : 'Has Variants'}
-                                  </span>
-                                )}
-                              </div>
-                            </div>
+                <tbody className="bg-white divide-y divide-gray-100">
+                  {filteredProducts.map((product) => (
+                    <tr key={product.id} className="hover:bg-gray-50 transition-colors">
+                      <td className="px-4 py-3">
+                        <input 
+                          type="checkbox" 
+                          checked={selectedProducts.includes(product.id)}
+                          onChange={() => handleSelectProduct(product.id)}
+                          className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                        />
+                      </td>
+                      <td className="px-4 py-2" style={{ maxWidth: '400px' }}>
+                        <div 
+                          className="flex items-center gap-2 cursor-pointer"
+                          onClick={() => handleProductClick(product)}
+                        >
+                          <img 
+                            src={product.image_urls?.[0] || 'https://via.placeholder.com/40'} 
+                            alt="" 
+                            className="w-10 h-10 rounded object-cover flex-shrink-0" 
+                            onError={(e) => e.target.src = 'https://via.placeholder.com/40'} 
+                          />
+                          <div className="min-w-0" style={{ maxWidth: '340px' }}>
+                            <p className="text-[11px] font-medium text-gray-900 truncate leading-tight mb-0.5" title={product.title}>
+                              {product.title}
+                            </p>
+                            <p className="text-[10px] text-gray-500 truncate">
+                              {product.brand} • {product.supplier_asin}
+                            </p>
                           </div>
-                        </td>
-                        <td className="px-6 py-4">
-                          <div className="text-sm text-gray-900">{product.internal_sku}</div>
-                          <div className="text-sm text-blue-600 hover:text-blue-800">
-                            <a 
-                              href={product.supplier_url || `https://www.amazon.com.au/dp/${product.supplier_asin}`}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="hover:underline"
-                            >
-                              {product.supplier_asin}
-                            </a>
-                          </div>
-                        </td>
-                        <td className="px-6 py-4 text-sm text-gray-900">
-                          {formatPrice(product.supplier_price)}
-                        </td>
-                        <td className="px-6 py-4 text-sm text-gray-900 font-medium">
-                          {formatPrice(product.our_price)}
-                        </td>
-                        <td className="px-6 py-4 text-sm text-green-600 font-medium">
-                          {getProfit(product.supplier_price, product.our_price)}
-                        </td>
-                        <td className="px-6 py-4">
-                          <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${getStatusColor(product.stock_status)}`}>
-                            {product.stock_status}
+                        </div>
+                      </td>
+                    <td className="px-4 py-2 whitespace-nowrap">
+                    <span className="text-[11px] text-gray-600">
+                      {new Date(product.created_at).toLocaleDateString('en-US', { 
+                        month: 'short', 
+                        day: 'numeric', 
+                        year: 'numeric' 
+                      })}
+                    </span>
+                  </td>
+
+                  {/* NEW: Last Updated Column */}
+                  <td className="px-4 py-2 whitespace-nowrap">
+                    <div className="flex flex-col gap-0.5">
+                      <span className="text-[12px] text-gray-600">
+                        {product.last_scraped ? (
+                          new Date(product.last_scraped).toLocaleDateString('en-US', { 
+                            month: 'short', 
+                            day: 'numeric', 
+                            hour: '2-digit',
+                            minute: '2-digit'
+                          })
+                        ) : 'Never'}
+                      </span>
+                      {(() => {
+                        if (!product.last_scraped) return null
+                        
+                        const lastScraped = new Date(product.last_scraped).getTime()
+                        const now = Date.now()
+                        const minutesAgo = Math.floor((now - lastScraped) / 60000)
+                        const hoursAgo = Math.floor(minutesAgo / 60)
+                        const daysAgo = Math.floor(hoursAgo / 24)
+                        
+                        let timeAgo = ''
+                        let colorClass = 'text-gray-500'
+                        
+                        if (minutesAgo < 5) {
+                          timeAgo = 'Just now'
+                          colorClass = 'text-green-600'
+                        } else if (minutesAgo < 60) {
+                          timeAgo = `${minutesAgo}m ago`
+                          colorClass = 'text-green-600'
+                        } else if (hoursAgo < 24) {
+                          timeAgo = `${hoursAgo}h ago`
+                          colorClass = hoursAgo < 2 ? 'text-green-600' : 'text-yellow-600'
+                        } else if (daysAgo < 7) {
+                          timeAgo = `${daysAgo}d ago`
+                          colorClass = 'text-orange-600'
+                        } else {
+                          timeAgo = `${Math.floor(daysAgo / 7)}w ago`
+                          colorClass = 'text-red-600'
+                        }
+                        
+                        return (
+                          <span className={`text-[11px] font-medium ${colorClass}`}>
+                            {timeAgo}
                           </span>
-                        </td>
-                        <td className="px-6 py-4 text-sm text-gray-900">
-                          {product.rating_average && (
-                            <div className="flex items-center">
-                              <div className="flex items-center">
-                                {[1, 2, 3, 4, 5].map((star) => (
-                                  <svg
-                                    key={star}
-                                    className={`h-4 w-4 ${
-                                      star <= Math.floor(product.rating_average)
-                                        ? 'text-yellow-400'
-                                        : 'text-gray-300'
-                                    }`}
-                                    fill="currentColor"
-                                    viewBox="0 0 20 20"
-                                  >
-                                    <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
-                                  </svg>
-                                ))}
+                        )
+                      })()}
+                    </div>
+                  </td>
+
+                  <td className="px-4 py-2 whitespace-nowrap">
+                    <span className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium ${
+                      product.stock_status === 'In Stock' ? 'bg-green-100 text-green-800' :
+                      product.stock_status === 'Limited Stock' ? 'bg-yellow-100 text-yellow-800' :
+                      'bg-red-100 text-red-800'
+                    }`}>
+                      {product.stock_status === 'In Stock' ? 'In Stock' :
+                      product.stock_status === 'Limited Stock' ? 'Limited' : 'Out of Stock'}
+                    </span>
+                  </td>
+                      <td className="px-4 py-2">
+                        <div className="flex items-center justify-center gap-1.5">
+                          {(() => {
+                            const stockSummary = getVariantStockSummary(product)
+                            const totalVariants = stockSummary.available + stockSummary.onHold + stockSummary.outOfStock
+                            
+                            return (
+                              <div className="flex flex-col items-center gap-1">
+                                <div className="text-[10px] font-medium text-gray-600">
+                                  {totalVariants} {totalVariants === 1 ? 'variant' : 'variants'}
+                                </div>
+                                
+                                <div className="flex items-center gap-1">
+                                  <div className="flex flex-col items-center">
+                                    <div className={`w-8 h-6 flex items-center justify-center text-[11px] font-bold rounded ${
+                                      stockSummary.available > 0 ? 'bg-green-500 text-white' : 'bg-gray-200 text-gray-400'
+                                    }`}>
+                                      {stockSummary.available}
+                                    </div>
+                                    <span className="text-[8px] text-gray-500 mt-0.5">Avail</span>
+                                  </div>
+                                  
+                                  <div className="flex flex-col items-center">
+                                    <div className={`w-8 h-6 flex items-center justify-center text-[11px] font-bold rounded ${
+                                      stockSummary.onHold > 0 ? 'bg-yellow-500 text-white' : 'bg-gray-200 text-gray-400'
+                                    }`}>
+                                      {stockSummary.onHold}
+                                    </div>
+                                    <span className="text-[8px] text-gray-500 mt-0.5">Hold</span>
+                                  </div>
+                                  
+                                  <div className="flex flex-col items-center">
+                                    <div className={`w-8 h-6 flex items-center justify-center text-[11px] font-bold rounded ${
+                                      stockSummary.outOfStock > 0 ? 'bg-red-500 text-white' : 'bg-gray-200 text-gray-400'
+                                    }`}>
+                                      {stockSummary.outOfStock}
+                                    </div>
+                                    <span className="text-[8px] text-gray-500 mt-0.5">Out</span>
+                                  </div>
+                                </div>
                               </div>
-                              <span className="ml-1 text-sm text-gray-600">
-                                {product.rating_average} ({product.rating_count?.toLocaleString()})
-                              </span>
-                            </div>
-                          )}
-                        </td>
-                        <td className="px-6 py-4 text-sm text-gray-500">
-                          <div className="flex items-center space-x-2">
-                            <a
-                              href={product.supplier_url || `https://www.amazon.com.au/dp/${product.supplier_asin}`}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="text-blue-600 hover:text-blue-800 font-medium"
-                              title="View on Amazon"
-                            >
-                              View
-                            </a>
-                            <span className="text-gray-300">|</span>
-                            <button
-                              onClick={() => handleUpdateSingleProduct(product.id)}
-                              className="text-green-600 hover:text-green-800 font-medium"
-                              title="Update product data"
-                            >
-                              Update
-                            </button>
+                            )
+                          })()}
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 whitespace-nowrap text-right">
+                        <div className="space-y-0.5">
+                          <div className="text-xs text-gray-500">
+                            Buy: <span className="font-semibold text-gray-900">${product.supplier_price?.toFixed(2) || '0.00'}</span>
                           </div>
-                          {product.last_scraped && (
-                            <div className="text-xs text-gray-400 mt-1">
-                              Updated: {new Date(product.last_scraped).toLocaleDateString()}
-                            </div>
-                          )}
-                        </td>
-                      </tr>
-                    )
-                  })}
+                          <div className="text-xs text-gray-500">
+                            Sell: <span className="font-semibold text-gray-900">${product.our_price?.toFixed(2) || '0.00'}</span>
+                          </div>
+                          <div className="text-xs font-semibold text-green-600">
+                            +${((product.our_price || 0) - (product.supplier_price || 0)).toFixed(2)}
+                          </div>
+                        </div>
+                      </td>
+                   <td className="px-4 py-3 whitespace-nowrap text-center">
+                  <div className="flex items-center justify-center gap-2">
+                    {updatingProducts.has(product.id) ? (
+                      <div className="flex items-center gap-2">
+                        <svg className="w-4 h-4 text-blue-600 animate-spin" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                        <span className="text-xs text-blue-600 font-medium">Updating...</span>
+                        {/* THIS IS THE CANCEL BUTTON - REPLACE THE OLD ONE */}
+                        <button
+                          onClick={() => {
+                            const controller = abortControllers.current.get(product.id)
+                            if (controller) {
+                              controller.abort()
+                            }
+                          }}
+                          className="text-xs text-red-600 hover:text-red-700 font-medium ml-1"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <>
+                        <button 
+                          onClick={() => handleUpdateSingleProduct(product.id)} 
+                          className="text-xs text-blue-600 hover:text-blue-700 font-medium"
+                        >
+                          Update
+                        </button>
+                        <a 
+                          href={product.supplier_url} 
+                          target="_blank" 
+                          rel="noopener noreferrer" 
+                          className="text-xs text-gray-600 hover:text-gray-900 font-medium"
+                        >
+                          View
+                        </a>
+                      </>
+                    )}
+                  </div>
+                </td>
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             </div>
           )}
         </div>
 
-        {/* Delete All Products Modal */}
-        {showDeleteConfirm && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-            <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4">
-              <h3 className="text-lg font-semibold text-red-600 mb-4">
-                ⚠️ Delete All Products
-              </h3>
-              
-              <div className="space-y-4 mb-6">
-                <p className="text-gray-700">
-                  This will permanently delete <strong>all {products.length} products</strong> and their:
-                </p>
-                <ul className="list-disc list-inside text-sm text-gray-600 space-y-1">
-                  <li>Price history records</li>
-                  <li>Update logs</li>
-                  <li>Import session data</li>
-                </ul>
-                <div className="bg-red-50 border border-red-200 rounded p-3">
-                  <p className="text-red-800 text-sm font-medium">
-                    This action cannot be undone!
+        {/* Update Confirmation Modal */}
+        {showUpdateConfirm && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+            <div className="bg-white rounded-lg shadow-xl max-w-md w-full">
+              <div className="px-6 py-4 border-b border-gray-200">
+                <h3 className="text-lg font-semibold text-gray-900">Update All Products</h3>
+              </div>
+              <div className="p-6">
+                <div className="flex items-start mb-4">
+                  <div className="flex-shrink-0">
+                    <svg className="h-6 w-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                    </svg>
+                  </div>
+                  <div className="ml-3">
+                    <p className="text-sm text-gray-700 mb-2">
+                      This will scrape fresh data from Amazon for all {products.length} active products.
+                    </p>
+                    <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mt-3">
+                      <p className="text-xs text-blue-800 font-medium mb-1">⚠️ This action will:</p>
+                      <ul className="text-xs text-blue-700 space-y-1 ml-4 list-disc">
+                        <li>Make {products.length} API calls to Amazon</li>
+                        <li>Take approximately {Math.ceil(products.length / 5 * 2)} minutes</li>
+                        <li>Update prices, stock, and ratings</li>
+                      </ul>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div className="px-6 py-4 bg-gray-50 border-t border-gray-200 flex justify-end gap-3">
+                <button
+                  onClick={() => setShowUpdateConfirm(false)}
+                  className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded hover:bg-gray-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={confirmUpdate}
+                  className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded hover:bg-blue-700"
+                >
+                  Start Update
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+{/* Update Progress Modal */}
+{showUpdateModal && (
+  <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+    <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full max-h-[90vh] overflow-hidden">
+      <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+        <div>
+          <h3 className="text-lg font-semibold text-gray-900">Update Progress</h3>
+          {updateSessionId && (
+  <p className="text-sm text-gray-500 mt-0.5">
+    Session #{updateSessionId.toString().slice(-8)}
+  </p>
+)}
+        </div>
+        <button 
+          onClick={() => setShowUpdateModal(false)}
+          className="text-gray-400 hover:text-gray-600"
+        >
+          <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+      </div>
+
+      <div className="p-6 overflow-y-auto max-h-[calc(90vh-180px)]">
+        {/* Progress Stats */}
+        <div className="grid grid-cols-3 gap-4 mb-6">
+          <div className="bg-blue-50 rounded-lg p-4 border border-blue-100">
+            <div className="text-xs font-medium text-blue-600 uppercase tracking-wide mb-1">Total</div>
+            <div className="text-3xl font-bold text-blue-700">{updateProgress.total}</div>
+          </div>
+          <div className="bg-green-50 rounded-lg p-4 border border-green-100">
+            <div className="text-xs font-medium text-green-600 uppercase tracking-wide mb-1">Updated</div>
+            <div className="text-3xl font-bold text-green-700">{updateProgress.updated}</div>
+          </div>
+          <div className="bg-red-50 rounded-lg p-4 border border-red-100">
+            <div className="text-xs font-medium text-red-600 uppercase tracking-wide mb-1">Failed</div>
+            <div className="text-3xl font-bold text-red-700">{updateProgress.failed}</div>
+          </div>
+        </div>
+
+        {/* Progress Bar */}
+        <div className="mb-6">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-sm font-medium text-gray-700">Overall Progress</span>
+            <span className="text-sm font-semibold text-gray-900">{updateProgress.percentage}%</span>
+          </div>
+          <div className="w-full bg-gray-200 rounded-full h-2">
+            <div 
+              className="bg-blue-600 h-2 rounded-full transition-all duration-500"
+              style={{ width: `${updateProgress.percentage}%` }}
+            ></div>
+          </div>
+          <div className="text-xs text-gray-500 mt-2">
+            {updateProgress.processed} of {updateProgress.total} processed
+          </div>
+        </div>
+
+        {/* Activity Log */}
+        <div className="border border-gray-200 rounded-lg overflow-hidden">
+          <div className="bg-gray-50 px-4 py-3 border-b border-gray-200">
+            <h4 className="text-sm font-semibold text-gray-900">Real-time Activity</h4>
+          </div>
+          
+          <div className="bg-white max-h-96 overflow-y-auto">
+            {updateLogs.length > 0 ? (
+              <div className="divide-y divide-gray-100">
+                {updateLogs.map((log, idx) => (
+                  <div 
+                    key={idx} 
+                    className={`px-4 py-3 flex items-center justify-between ${
+                      log.status === 'success' ? 'bg-green-50/30' :
+                      log.status === 'error' ? 'bg-red-50/30' : 'bg-blue-50/30'
+                    }`}
+                  >
+                    <div className="flex items-center gap-3 flex-1">
+                      <div className="flex-shrink-0">
+                        {log.status === 'success' && (
+                          <svg className="w-5 h-5 text-green-600" fill="currentColor" viewBox="0 0 20 20">
+                            <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                          </svg>
+                        )}
+                        {log.status === 'error' && (
+                          <svg className="w-5 h-5 text-red-600" fill="currentColor" viewBox="0 0 20 20">
+                            <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                          </svg>
+                        )}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <span className="text-sm font-mono font-semibold text-gray-900">{log.asin}</span>
+                        <span className="text-gray-400 mx-2">•</span>
+                        <span className="text-sm text-gray-600">{log.message}</span>
+                      </div>
+                    </div>
+                    <span className="text-xs text-gray-400">
+                      {new Date(log.created_at).toLocaleTimeString()}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="py-16 text-center">
+                <p className="text-sm text-gray-500">Waiting for updates...</p>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Modal Footer */}
+      <div className="px-6 py-4 bg-gray-50 border-t border-gray-200 flex justify-between">
+        {updateProgress.percentage < 100 ? (
+          <button 
+            onClick={handleCancelUpdate}
+            className="px-4 py-2 text-sm font-medium text-white bg-red-600 rounded hover:bg-red-700"
+          >
+            Cancel Update
+          </button>
+        ) : (
+          <span></span>
+        )}
+        <button 
+          onClick={() => setShowUpdateModal(false)}
+          className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded hover:bg-gray-50 ml-auto"
+        >
+          Close
+        </button>
+      </div>
+    </div>
+  </div>
+)}
+        {/* Import Details Modal */}
+        {showImportModal && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+            <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full max-h-[90vh] overflow-hidden">
+              <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+                <div>
+                  <h3 className="text-lg font-semibold text-gray-900">Import Progress</h3>
+                  <p className="text-sm text-gray-500 mt-0.5">
+                    Session #{currentCsvSession?.toString().slice(-8)}
                   </p>
+                </div>
+                <button 
+                  onClick={() => setShowImportModal(false)}
+                  className="text-gray-400 hover:text-gray-600 transition-colors"
+                >
+                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+
+              <div className="p-6 overflow-y-auto max-h-[calc(90vh-180px)]">
+                <div className="grid grid-cols-4 gap-4 mb-6">
+                  <div className="bg-blue-50 rounded-lg p-4 border border-blue-100">
+                    <div className="text-xs font-medium text-blue-600 uppercase tracking-wide mb-1">Total</div>
+                    <div className="text-3xl font-bold text-blue-700">{csvImportProgress.total}</div>
+                  </div>
+                  <div className="bg-green-50 rounded-lg p-4 border border-green-100">
+                    <div className="text-xs font-medium text-green-600 uppercase tracking-wide mb-1">Imported</div>
+                    <div className="text-3xl font-bold text-green-700">{csvImportProgress.imported}</div>
+                  </div>
+                  <div className="bg-yellow-50 rounded-lg p-4 border border-yellow-100">
+                    <div className="text-xs font-medium text-yellow-600 uppercase tracking-wide mb-1">Updated</div>
+                    <div className="text-3xl font-bold text-yellow-700">{csvImportProgress.updated}</div>
+                  </div>
+                  <div className="bg-red-50 rounded-lg p-4 border border-red-100">
+                    <div className="text-xs font-medium text-red-600 uppercase tracking-wide mb-1">Failed</div>
+                    <div className="text-3xl font-bold text-red-700">{csvImportProgress.failed}</div>
+                  </div>
+                </div>
+
+                <div className="mb-6">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-sm font-medium text-gray-700">Overall Progress</span>
+                    <span className="text-sm font-semibold text-gray-900">{csvImportProgress.percentage}%</span>
+                  </div>
+                  <div className="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
+                    <div 
+                      className="bg-blue-600 h-2 rounded-full transition-all duration-500"
+                      style={{ width: `${csvImportProgress.percentage}%` }}
+                    ></div>
+                  </div>
+                  <div className="flex items-center justify-between mt-2 text-xs text-gray-500">
+                    <span>{csvImportProgress.processed} of {csvImportProgress.total} processed</span>
+                    <span>Batch {Math.ceil(csvImportProgress.processed / 5)}/{Math.ceil(csvImportProgress.total / 5)}</span>
+                  </div>
+                </div>
+
+                <div className="border border-gray-200 rounded-lg overflow-hidden">
+                  <div className="bg-gray-50 px-4 py-3 border-b border-gray-200 flex items-center justify-between">
+                    <h4 className="text-sm font-semibold text-gray-900">Real-time Activity</h4>
+                    <div className="flex items-center gap-2">
+                      <span className="relative flex h-2 w-2">
+                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                        <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
+                      </span>
+                      <span className="text-xs text-green-600 font-medium">Live</span>
+                    </div>
+                  </div>
+                  
+                  <div className="bg-white max-h-96 overflow-y-auto">
+                    {csvImportDetails.length > 0 ? (
+                      <div className="divide-y divide-gray-100">
+                        {csvImportDetails.slice(0, 50).map((detail, idx) => (
+                          <div 
+                            key={idx} 
+                            className={`px-4 py-3 flex items-center justify-between hover:bg-gray-50 transition-colors ${
+                              detail.status === 'success' ? 'border-l-2 border-green-500 bg-green-50/30' :
+                              detail.status === 'error' ? 'border-l-2 border-red-500 bg-red-50/30' :
+                              'border-l-2 border-blue-500 bg-blue-50/30'
+                            }`}
+                          >
+                            <div className="flex items-center gap-3 flex-1 min-w-0">
+                              <div className="flex-shrink-0">
+                                {detail.status === 'success' && (
+                                  <svg className="w-5 h-5 text-green-600" fill="currentColor" viewBox="0 0 20 20">
+                                    <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                                  </svg>
+                                )}
+                                {detail.status === 'error' && (
+                                  <svg className="w-5 h-5 text-red-600" fill="currentColor" viewBox="0 0 20 20">
+                                    <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                                  </svg>
+                                )}
+                                {detail.status === 'processing' && (
+                                  <svg className="w-5 h-5 text-blue-600 animate-spin" fill="none" viewBox="0 0 24 24">
+                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                  </svg>
+                                )}
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-2">
+                                  <span className="text-sm font-mono font-semibold text-gray-900">{detail.asin}</span>
+                                  <span className="text-gray-400">•</span>
+                                  <span className="text-sm text-gray-600 truncate">{detail.message}</span>
+                                </div>
+                              </div>
+                            </div>
+                            <div className="flex-shrink-0 ml-4">
+                              <span className="text-xs text-gray-400">
+                                {new Date(detail.timestamp).toLocaleTimeString()}
+                              </span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="py-16 px-4 text-center">
+                        <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-blue-50 mb-4">
+                          <svg className="w-8 h-8 text-blue-600 animate-spin" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                          </svg>
+                        </div>
+                        <p className="text-sm font-medium text-gray-900 mb-1">Processing imports...</p>
+                        <p className="text-xs text-gray-500">
+                          Scraping Amazon AU products • Batch {Math.ceil(csvImportProgress.processed / 5)}/{Math.ceil(csvImportProgress.total / 5)}
+                        </p>
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
 
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Type &quot;DELETE_ALL_PRODUCTS&quot; to confirm:
-                  </label>
-                  <input
-                    type="text"
-                    value={deleteConfirmText}
-                    onChange={(e) => setDeleteConfirmText(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-red-500 focus:border-red-500"
-                    placeholder="DELETE_ALL_PRODUCTS"
-                    disabled={isDeleting}
-                  />
-                </div>
+              <div className="px-6 py-4 bg-gray-50 border-t border-gray-200 flex justify-between items-center">
+                {(csvImportStatus === 'processing' || csvImportStatus === 'running') && (
+                  <button 
+                    onClick={handleCancelImport}
+                    className="px-4 py-2 text-sm font-medium text-white bg-red-600 rounded hover:bg-red-700"
+                  >
+                    Cancel Import
+                  </button>
+                )}
+                {csvImportStatus === 'cancelled' && (
+                  <span className="text-sm text-gray-600">Import cancelled</span>
+                )}
+                {(csvImportStatus === 'idle' || csvImportStatus === 'completed') && (
+                  <span></span>
+                )}
+                <button 
+                  onClick={() => setShowImportModal(false)}
+                  className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded hover:bg-gray-50 ml-auto"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
-                <div className="flex space-x-3">
-                  <button
-                    onClick={() => {
-                      setShowDeleteConfirm(false)
-                      setDeleteConfirmText('')
-                    }}
-                    disabled={isDeleting}
-                    className="flex-1 px-4 py-2 bg-gray-300 text-gray-700 rounded-lg hover:bg-gray-400 disabled:opacity-50"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    onClick={handleDeleteAll}
-                    disabled={deleteConfirmText !== 'DELETE_ALL_PRODUCTS' || isDeleting}
-                    className="flex-1 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    {isDeleting ? 'Deleting...' : 'Delete All'}
-                  </button>
+        {/* Delete Confirmation Modal */}
+        {showDeleteConfirm && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+            <div className="bg-white rounded-lg shadow-xl max-w-md w-full">
+              <div className="px-6 py-4 border-b border-gray-200">
+                <h3 className="text-lg font-semibold text-gray-900">Delete All Products</h3>
+              </div>
+              <div className="p-6">
+                <div className="flex items-start mb-4">
+                  <div className="flex-shrink-0">
+                    <svg className="h-6 w-6 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                    </svg>
+                  </div>
+                  <div className="ml-3">
+                    <p className="text-sm text-gray-700">
+                      This will permanently delete all {products.length} products and their associated data.
+                    </p>
+                    <div className="mt-4">
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        Type "DELETE_ALL_PRODUCTS" to confirm:
+                      </label>
+                      <input
+                        type="text"
+                        value={deleteConfirmText}
+                        onChange={(e) => setDeleteConfirmText(e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded focus:ring-1 focus:ring-red-500"
+                        placeholder="DELETE_ALL_PRODUCTS"
+                        disabled={isDeleting}
+                      />
+                    </div>
+                  </div>
                 </div>
+              </div>
+              <div className="px-6 py-4 bg-gray-50 border-t border-gray-200 flex justify-end gap-3">
+                <button
+                  onClick={() => {
+                    setShowDeleteConfirm(false)
+                    setDeleteConfirmText('')
+                  }}
+                  disabled={isDeleting}
+                  className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded hover:bg-gray-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleDeleteAll}
+                  disabled={deleteConfirmText !== 'DELETE_ALL_PRODUCTS' || isDeleting}
+                  className="px-4 py-2 text-sm font-medium text-white bg-red-600 rounded hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {isDeleting ? 'Deleting...' : 'Delete All Products'}
+                </button>
               </div>
             </div>
           </div>

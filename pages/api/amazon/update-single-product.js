@@ -1,7 +1,6 @@
-// pages/api/amazon/update-single-product.js - Real scraping for single product updates
+// pages/api/amazon/update-single-product.js - Fixed with category handling
 import { supabase } from '../../../lib/supabase'
-import { scrapeAmazonProduct } from '../../../lib/amazonScraper'
-
+import { scrapeAmazonProduct, scrapeAmazonProductWithVariants, calculateStockSummary } from '../../../lib/amazonScraper'
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -9,17 +8,22 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { productId, asin, country = 'AU' } = req.body
+    const { 
+      productId, 
+      asin, 
+      userId,
+      country = 'AU',
+      fetchVariants = true,
+      accurateStock = true,
+      maxVariants = 999
+    } = req.body
 
     if (!productId && !asin) {
-      return res.status(400).json({ 
-        error: 'Product ID or ASIN required' 
-      })
+      return res.status(400).json({ error: 'Product ID or ASIN required' })
     }
 
-    console.log(`Updating single product: ${productId || asin}`)
+    console.log(`[SINGLE-UPDATE] Starting for: ${productId || asin}`)
 
-    // Get product from database
     let product
     if (productId) {
       const { data, error } = await supabase
@@ -29,40 +33,32 @@ export default async function handler(req, res) {
         .single()
       
       if (error || !data) {
-        return res.status(404).json({ 
-          error: 'Product not found' 
-        })
-      }
-      product = data
-    } else {
-      // Find by ASIN if productId not provided
-      const { data, error } = await supabase
-        .from('products')
-        .select('*')
-        .eq('supplier_asin', asin)
-        .single()
-      
-      if (error || !data) {
-        return res.status(404).json({ 
-          error: 'Product not found' 
-        })
+        return res.status(404).json({ error: 'Product not found' })
       }
       product = data
     }
 
     const productAsin = product.supplier_asin
-    console.log(`Found product: ${product.title} (${productAsin})`)
+    console.log(`[SINGLE-UPDATE] Updating: ${product.title} (${productAsin})`)
 
-    // Scrape fresh data from Amazon
     let scrapedData
     try {
-      scrapedData = await scrapeAmazonProduct(productAsin, country)
+      if (fetchVariants) {
+        scrapedData = await scrapeAmazonProductWithVariants(productAsin, country, {
+          fetchVariants: true,
+          maxVariants: maxVariants,
+          accurateStock: accurateStock
+        })
+        console.log(`Successfully scraped with variant data: ${scrapedData.title}`)
+      } else {
+        scrapedData = await scrapeAmazonProduct(productAsin, country)
+        console.log(`Successfully scraped: ${scrapedData.title}`)
+      }
     } catch (scrapeError) {
-      console.error('Scraping failed:', scrapeError.message)
+      console.error('[SINGLE-UPDATE] Scraping failed:', scrapeError.message)
       
-      // Increment error count but don't fail completely
       const newErrorCount = (product.scrape_errors || 0) + 1
-      const shouldDeactivate = newErrorCount >= 10 // Max errors before deactivation
+      const shouldDeactivate = newErrorCount >= 10
       
       await supabase
         .from('products')
@@ -75,10 +71,8 @@ export default async function handler(req, res) {
       
       return res.status(400).json({
         success: false,
-        error: 'Failed to scrape updated product data',
-        message: scrapeError.message,
-        errorCount: newErrorCount,
-        deactivated: shouldDeactivate
+        error: 'Failed to scrape updated data',
+        message: scrapeError.message
       })
     }
 
@@ -89,30 +83,47 @@ export default async function handler(req, res) {
       })
     }
 
-    // Calculate new our price
-    const newOurPrice = scrapedData.price ? 
-      parseFloat((scrapedData.price * 1.2 + 0.30).toFixed(2)) : product.our_price
-
-    // Check what changed
-    const changes = detectChanges(product, scrapedData, newOurPrice)
+    const metadata = scrapedData.metadata || {}
+    delete scrapedData.metadata
     
-    // Update product in database
+    if (scrapedData.variants?.has_variations) {
+      const stockSummary = calculateStockSummary(scrapedData.variants)
+      metadata.stock_summary = stockSummary
+    }
+
     const updatedProductData = {
-      title: scrapedData.title,
-      brand: scrapedData.brand,
-      category: scrapedData.category,
-      supplier_price: scrapedData.price,
-      our_price: newOurPrice,
-      currency: scrapedData.currency,
-      stock_status: scrapedData.stockStatus,
-      rating_average: scrapedData.rating.average,
-      rating_count: scrapedData.rating.count,
-      image_urls: scrapedData.images,
-      description: scrapedData.description,
-      features: scrapedData.features,
+      title: truncateString(scrapedData.title, 1000),
+      brand: truncateString(scrapedData.brand, 500),
+      category: typeof scrapedData.category === 'string' 
+        ? truncateString(scrapedData.category, 500)
+        : (scrapedData.category?.name ? truncateString(scrapedData.category.name, 500) : null),
+      image_urls: Array.isArray(scrapedData.image_urls)
+        ? scrapedData.image_urls.map(url => truncateString(url, 1000))
+        : scrapedData.image_urls,
+      description: truncateString(scrapedData.description, 5000),
+      features: Array.isArray(scrapedData.features) 
+        ? scrapedData.features.map(f => truncateString(f, 500))
+        : scrapedData.features,
+      
+      supplier_price: scrapedData.supplier_price,
+      our_price: scrapedData.our_price,
+      currency: truncateString(scrapedData.currency, 3),
+      
+      stock_status: truncateString(scrapedData.stock_status, 50),
+      stock_quantity: scrapedData.stock_quantity,
+      
+      shipping_info: cleanShippingInfo(scrapedData.shipping_info),
+      
+      rating_average: scrapedData.rating_average,
+      rating_count: scrapedData.rating_count,
+      
+      variants: cleanVariants(scrapedData.variants),
+      
+      metadata: metadata,
+      
       is_active: true,
       last_scraped: new Date().toISOString(),
-      scrape_errors: 0, // Reset error count on successful update
+      scrape_errors: 0,
       updated_at: new Date().toISOString()
     }
 
@@ -123,45 +134,35 @@ export default async function handler(req, res) {
       .select()
       .single()
 
-    if (updateError) {
-      throw updateError
-    }
+    if (updateError) throw updateError
 
-    // Add price history if price changed
-    if (changes.priceChanged) {
-      await supabase
+    if (product.supplier_price !== scrapedData.supplier_price) {
+      const { error: priceError } = await supabase
         .from('price_history')
         .insert({
           product_id: product.id,
-          supplier_price: scrapedData.price,
-          our_price: newOurPrice,
-          stock_status: scrapedData.stockStatus,
+          supplier_price: scrapedData.supplier_price,
+          our_price: scrapedData.our_price,
+          stock_status: scrapedData.stock_status,
           recorded_at: new Date().toISOString()
         })
-        .catch(err => console.warn('Price history insert failed:', err))
+      
+      if (priceError) {
+        console.warn('[PRICE-HISTORY]:', priceError.message)
+      }
     }
 
-    console.log(`Successfully updated product ${productAsin}`)
+    console.log(`[SINGLE-UPDATE] ✓ Successfully updated ${productAsin}`)
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
       product: updatedProduct,
-      changes: changes,
-      message: changes.hasChanges ? 
-        'Product updated with new data from Amazon' : 
-        'Product refreshed - no changes detected',
-      scrapingData: {
-        supplierPrice: scrapedData.price,
-        ourPrice: newOurPrice,
-        stockStatus: scrapedData.stockStatus,
-        rating: scrapedData.rating,
-        scrapedAt: scrapedData.scrapedAt
-      }
+      message: 'Product updated successfully'
     })
 
   } catch (error) {
-    console.error('Single product update error:', error)
-    res.status(500).json({
+    console.error('[SINGLE-UPDATE] Error:', error)
+    return res.status(500).json({
       success: false,
       error: 'Update failed',
       message: error.message
@@ -169,76 +170,37 @@ export default async function handler(req, res) {
   }
 }
 
-function detectChanges(oldProduct, scrapedData, newOurPrice) {
-  const changes = {
-    hasChanges: false,
-    priceChanged: false,
-    stockChanged: false,
-    ratingChanged: false,
-    titleChanged: false,
-    imageChanged: false,
-    details: []
-  }
+function truncateString(str, maxLength) {
+  if (!str) return str
+  if (typeof str !== 'string') return str
+  if (str.length <= maxLength) return str
+  return str.substring(0, maxLength - 3) + '...'
+}
 
-  // Price change
-  if (oldProduct.supplier_price !== scrapedData.price) {
-    changes.priceChanged = true
-    changes.hasChanges = true
-    changes.details.push({
-      field: 'supplier_price',
-      old: oldProduct.supplier_price,
-      new: scrapedData.price,
-      ourPriceOld: oldProduct.our_price,
-      ourPriceNew: newOurPrice
-    })
-  }
+function cleanShippingInfo(shippingInfo) {
+  if (!shippingInfo || typeof shippingInfo !== 'object') return shippingInfo
+  
+  return Object.keys(shippingInfo).reduce((acc, key) => {
+    const value = shippingInfo[key]
+    acc[key] = typeof value === 'string' ? truncateString(value, 500) : value
+    return acc
+  }, {})
+}
 
-  // Stock status change
-  if (oldProduct.stock_status !== scrapedData.stockStatus) {
-    changes.stockChanged = true
-    changes.hasChanges = true
-    changes.details.push({
-      field: 'stock_status',
-      old: oldProduct.stock_status,
-      new: scrapedData.stockStatus
-    })
+function cleanVariants(variants) {
+  if (!variants || !variants.options || !Array.isArray(variants.options)) {
+    return variants
   }
-
-  // Rating change
-  if (oldProduct.rating_average !== scrapedData.rating.average) {
-    changes.ratingChanged = true
-    changes.hasChanges = true
-    changes.details.push({
-      field: 'rating_average',
-      old: oldProduct.rating_average,
-      new: scrapedData.rating.average
-    })
+  
+  return {
+    ...variants,
+    options: variants.options.map(variant => ({
+      ...variant,
+      asin: truncateString(variant.asin, 20),
+      title: truncateString(variant.title, 500),
+      value: truncateString(variant.value, 500),
+      dimension_name: truncateString(variant.dimension_name, 200),
+      image_url: truncateString(variant.image_url, 1000)
+    }))
   }
-
-  // Title change (significant changes only)
-  if (oldProduct.title !== scrapedData.title && 
-      Math.abs(oldProduct.title.length - scrapedData.title.length) > 10) {
-    changes.titleChanged = true
-    changes.hasChanges = true
-    changes.details.push({
-      field: 'title',
-      old: oldProduct.title.substring(0, 50) + '...',
-      new: scrapedData.title.substring(0, 50) + '...'
-    })
-  }
-
-  // Image changes (compare first image)
-  const oldFirstImage = oldProduct.image_urls?.[0]
-  const newFirstImage = scrapedData.images?.[0]
-  if (oldFirstImage !== newFirstImage) {
-    changes.imageChanged = true
-    changes.hasChanges = true
-    changes.details.push({
-      field: 'primary_image',
-      old: oldFirstImage ? 'Changed' : 'None',
-      new: newFirstImage ? 'Updated' : 'None'
-    })
-  }
-
-  return changes
 }
