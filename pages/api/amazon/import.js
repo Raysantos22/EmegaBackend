@@ -185,9 +185,7 @@ export default async function handler(req, res) {
       
       title: truncateString(truncatedTitle, 1000), // Extra safety
       brand: truncateString(scrapedData.brand, 500),
-      category: typeof scrapedData.category === 'string' 
-        ? truncateString(scrapedData.category, 500)
-        : (scrapedData.category?.name ? truncateString(scrapedData.category.name, 500) : null),
+      category: truncateString(scrapedData.category, 500),
       image_urls: Array.isArray(scrapedData.image_urls)
         ? scrapedData.image_urls.map(url => truncateString(url, 1000))
         : scrapedData.image_urls,

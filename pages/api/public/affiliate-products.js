@@ -9,7 +9,6 @@ export default async function handler(req, res) {
   try {
     const { apiKey, storeName, sku } = req.query
 
-    // Validate API key
     if (!apiKey) {
       return res.status(401).json({ 
         success: false,
@@ -17,10 +16,10 @@ export default async function handler(req, res) {
       })
     }
 
-    // Verify API key and get user
+    // Verify API key and get store
     const { data: apiKeyData, error: keyError } = await supabase
       .from('api_keys')
-      .select('user_id, is_active')
+      .select('user_id, store_id, is_active')
       .eq('key', apiKey)
       .eq('is_active', true)
       .single()
@@ -33,35 +32,32 @@ export default async function handler(req, res) {
     }
 
     const userId = apiKeyData.user_id
+    const storeId = apiKeyData.store_id
 
-    // Build query
+    // Get store details
+    const { data: store } = await supabase
+      .from('stores')
+      .select('*')
+      .eq('id', storeId)
+      .eq('is_active', true)
+      .single()
+
+    if (!store) {
+      return res.status(404).json({
+        success: false,
+        error: 'Store not found'
+      })
+    }
+
+    // Build query for affiliate links
     let query = supabase
       .from('affiliate_links')
       .select('*')
       .eq('user_id', userId)
+      .eq('store_id', storeId)
       .eq('is_active', true)
 
-    // Filter by store
-    if (storeName) {
-      const { data: stores } = await supabase
-        .from('stores')
-        .select('id')
-        .eq('user_id', userId)
-        .eq('store_name', storeName)
-        .eq('is_active', true)
-
-      if (stores && stores.length > 0) {
-        query = query.in('store_id', stores.map(s => s.id))
-      } else {
-        return res.status(200).json({
-          success: true,
-          count: 0,
-          products: []
-        })
-      }
-    }
-
-    // Filter by SKU
+    // Filter by SKU if provided
     if (sku) {
       query = query.eq('internal_sku', sku)
     }
@@ -70,21 +66,14 @@ export default async function handler(req, res) {
 
     if (error) throw error
 
-    // Enrich with store and product data
+    // Enrich with product data
     const enrichedProducts = await Promise.all(
       (links || []).map(async (link) => {
-        // Get store
-        const { data: store } = await supabase
-          .from('stores')
-          .select('id, store_name, description, website_url')
-          .eq('id', link.store_id)
-          .single()
-
-        // Get product
         const { data: product } = await supabase
           .from('products')
           .select('*')
           .eq('internal_sku', link.internal_sku)
+          .eq('user_id', userId)
           .single()
 
         if (!product) return null
@@ -92,9 +81,9 @@ export default async function handler(req, res) {
         return {
           affiliate_link: link.affiliate_url,
           store: {
-            name: store?.store_name,
-            description: store?.description,
-            website: store?.website_url
+            name: store.store_name,
+            description: store.description,
+            website: store.website_url
           },
           product: {
             sku: product.internal_sku,
@@ -120,7 +109,8 @@ export default async function handler(req, res) {
             },
             variants: product.variants,
             last_updated: product.last_scraped
-          }
+          },
+          notes: link.notes
         }
       })
     )
@@ -129,6 +119,11 @@ export default async function handler(req, res) {
 
     return res.status(200).json({
       success: true,
+      store: {
+        name: store.store_name,
+        description: store.description,
+        website: store.website_url
+      },
       count: validProducts.length,
       products: validProducts,
       timestamp: new Date().toISOString()
