@@ -738,7 +738,9 @@ export default function StoresPage() {
         {/* Add Link Modal */}
         {showAddLinkModal && (
           <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-            <div className="bg-white rounded-xl shadow-2xl max-w-2xl w-full max-h-[130vh] flex flex-col">
+            <div className={`bg-white rounded-xl shadow-2xl max-w-4xl w-full flex flex-col transition-all duration-300 ${
+              showProductDropdown && filteredProducts.length > 0 ? 'h-[60vh]' : 'h-[35vh]'
+            }`}>
               <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
                 <div>
                   <h3 className="text-lg font-bold text-gray-900">Add Affiliate Link</h3>

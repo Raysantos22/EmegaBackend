@@ -65,13 +65,22 @@ export default function ProductDetailPage() {
     if (variantsData?.has_variations && variantsData?.options?.length > 0) {
       const parsedVariants = variantsData.options.map((variant, idx) => {
         const dimensions = variant.dimensions || {}
-        const color = dimensions.Colour || dimensions.Color || dimensions['Colour Name'] || 'N/A' 
+        const color = dimensions.Colour || dimensions.Color || dimensions['Colour Name'] || dimensions['Scent Name'] || dimensions['Pattern Name'] || 'Default' 
         const size = dimensions['Size Name'] || dimensions.Size || ''
         const style = dimensions['Style Name'] || ''
         
         let variantName = color
         if (size) variantName += ` - ${size}`
         if (style) variantName += ` (${style})`
+
+        // Auto-convert Unknown stock status to Out of Stock with 0 quantity
+        let stockStatus = variant.stock_status || 'Unknown'
+        let stockQuantity = variant.stock_quantity
+        
+        if (stockStatus === 'Unknown' || stockQuantity === null) {
+          stockStatus = 'Out of Stock'
+          stockQuantity = 0
+        }
 
         return {
           id: idx + 1,
@@ -81,8 +90,8 @@ export default function ProductDetailPage() {
           style: style,
           asin: variant.asin,
           selected: variant.selected || false,
-          stock_status: variant.stock_status || 'Unknown',
-          stock_quantity: variant.stock_quantity,
+          stock_status: stockStatus,
+          stock_quantity: stockQuantity,
           price: variant.price || product.supplier_price,
           image: variant.image || product.image_urls?.[idx] || product.image_urls?.[0]
         }

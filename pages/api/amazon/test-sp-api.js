@@ -15,27 +15,14 @@ export default async function handler(req, res) {
       }
     )
 
-    const accessToken = tokenResponse.data.access_token
-
-    // For sandbox, use test order ID
-    const testOrderId = 'TEST_CASE_200'
-    
-    const orderResponse = await axios.get(
-      `https://sandbox.sellingpartnerapi-fe.amazon.com/orders/v0/orders/${testOrderId}`,
-      {
-        headers: {
-          'x-amz-access-token': accessToken
-        }
-      }
-    )
-
     return res.status(200).json({
       success: true,
-      order: orderResponse.data
+      message: 'SP-API authentication working',
+      access_token: tokenResponse.data.access_token.substring(0, 20) + '...',
+      expires_in: tokenResponse.data.expires_in
     })
 
   } catch (error) {
-    console.error('SP-API Error:', error.response?.data || error.message)
     return res.status(500).json({
       success: false,
       error: error.message,

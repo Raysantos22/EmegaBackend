@@ -1,5 +1,5 @@
-// pages/amazon-products.js - With Update Status & Confirmation
-import { useState, useEffect, useCallback, useRef } from 'react'  // Add useRef
+// pages/amazon-products.js - Complete with Quick Affiliate Link Feature
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useRouter } from 'next/router'
 import { supabase } from '../lib/supabase'
 import DashboardLayout from '../components/DashboardLayout'
@@ -31,18 +31,27 @@ export default function AmazonProductsPage() {
   const [updateStatus, setUpdateStatus] = useState(null)
   const [updatingProducts, setUpdatingProducts] = useState(new Set())
   const [showUpdateConfirm, setShowUpdateConfirm] = useState(false)
-  const [showUpdateModal, setShowUpdateModal] = useState(false) // NEW
- const [updateProgress, setUpdateProgress] = useState({
-  processed: 0,
-  updated: 0,
-  failed: 0,
-  total: 0,
-  percentage: 0,
-  currentProduct: null,
-  completed: false  // ADD THIS LINE
-})
-const [updateSessionId, setUpdateSessionId] = useState(null) // NEW
-const [updateLogs, setUpdateLogs] = useState([]) // NEW
+  const [showUpdateModal, setShowUpdateModal] = useState(false)
+  const [updateProgress, setUpdateProgress] = useState({
+    processed: 0,
+    updated: 0,
+    failed: 0,
+    total: 0,
+    percentage: 0,
+    currentProduct: null,
+    completed: false
+  })
+  const [updateSessionId, setUpdateSessionId] = useState(null)
+  const [updateLogs, setUpdateLogs] = useState([])
+  
+  // Quick Affiliate Link states
+  const [showQuickLinkModal, setShowQuickLinkModal] = useState(false)
+  const [selectedProductForLink, setSelectedProductForLink] = useState(null)
+  const [userStores, setUserStores] = useState([])
+  const [quickLinkForm, setQuickLinkForm] = useState({
+    storeId: '',
+    affiliateUrl: ''
+  })
   
   // Filter and search states
   const [filter, setFilter] = useState('all')
@@ -66,6 +75,7 @@ const [updateLogs, setUpdateLogs] = useState([]) // NEW
     } else {
       setSession(session)
       await loadProducts(session.user.id)
+      await loadUserStores(session.user.id)
       await checkCsvImportStatus(session.user.id)
     }
     setLoading(false)
@@ -98,6 +108,24 @@ const [updateLogs, setUpdateLogs] = useState([]) // NEW
       addNotification('Failed to load products', 'error')
     } finally {
       setLoading(false)
+    }
+  }
+
+  const loadUserStores = async (userId) => {
+    if (!userId) return
+    
+    try {
+      const { data: stores, error } = await supabase
+        .from('stores')
+        .select('id, store_name')
+        .eq('user_id', userId)
+        .eq('is_active', true)
+        .order('store_name')
+      
+      if (error) throw error
+      setUserStores(stores || [])
+    } catch (error) {
+      console.error('Error loading stores:', error)
     }
   }
 
@@ -327,125 +355,124 @@ const [updateLogs, setUpdateLogs] = useState([]) // NEW
   }
 
   const confirmUpdate = async () => {
-  setShowUpdateConfirm(false)
-  
-  try {
-    addNotification('Starting update process...', 'info')
+    setShowUpdateConfirm(false)
     
-    const response = await fetch('/api/amazon/update-hourly', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId: session.user.id })
-    })
-    const data = await response.json()
-    
-    if (response.ok && data.success) {
-      // IMPORTANT: Make sure you're setting the session ID correctly
-      const sessionId = data.sessionId
-      console.log('[FRONTEND] Update started with session ID:', sessionId) // Debug log
+    try {
+      addNotification('Starting update process...', 'info')
       
-      setUpdateSessionId(sessionId)
-      setUpdateProgress({
-        processed: 0,
-        updated: 0,
-        failed: 0,
-        total: data.totalProducts,
-        percentage: 0,
-        completed: false
+      const response = await fetch('/api/amazon/update-hourly', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: session.user.id })
       })
-      setShowUpdateModal(true)
-      addNotification(`Update started for ${data.totalProducts} products`, 'info')
+      const data = await response.json()
       
-      // Start polling immediately with the session ID
-      const pollInterval = setInterval(async () => {
-        await checkUpdateStatus(sessionId, pollInterval)
-      }, 3000) // Poll every 3 seconds instead of 5 for faster updates
-      
-    } else {
-      throw new Error(data.message || 'Update failed')
-    }
-  } catch (error) {
-    addNotification(`Update failed: ${error.message}`, 'error')
-  }
-}
-const checkUpdateStatus = async (sessionId, pollInterval) => {
-  try {
-    const response = await fetch(`/api/amazon/update-status?userId=${session.user.id}&sessionId=${sessionId}`)
-    const data = await response.json()
-    
-    if (data.success && data.session) {
-      setUpdateProgress({
-        ...data.progress,
-        completed: data.session.status === 'completed'
-      })
-      
-      // Fetch logs from update_logs table using batch_id
-      const { data: logs, error: logsError } = await supabase
-        .from('update_logs')
-        .select(`
-          *,
-          products!update_logs_product_id_fkey(supplier_asin)
-        `)
-        .eq('batch_id', sessionId)
-        .order('created_at', { ascending: false })
-        .limit(50)
-      
-      if (logs && !logsError) {
-        // Transform logs to match your display format
-        setUpdateLogs(logs.map(log => ({
-          asin: log.products?.supplier_asin || 'Unknown',
-          status: log.action,
-          message: log.error_message || 'Updated successfully',
-          created_at: log.created_at
-        })))
-      }
-      
-      if (data.session.status === 'completed' || data.session.status === 'cancelled' || data.session.status === 'failed') {
-        clearInterval(pollInterval)
-        await loadProducts(session.user.id)
+      if (response.ok && data.success) {
+        const sessionId = data.sessionId
+        console.log('[FRONTEND] Update started with session ID:', sessionId)
         
-        if (data.session.status === 'completed') {
-          addNotification(`Update completed! Updated: ${data.progress.updated}`, 'success')
+        setUpdateSessionId(sessionId)
+        setUpdateProgress({
+          processed: 0,
+          updated: 0,
+          failed: 0,
+          total: data.totalProducts,
+          percentage: 0,
+          completed: false
+        })
+        setShowUpdateModal(true)
+        addNotification(`Update started for ${data.totalProducts} products`, 'info')
+        
+        const pollInterval = setInterval(async () => {
+          await checkUpdateStatus(sessionId, pollInterval)
+        }, 3000)
+        
+      } else {
+        throw new Error(data.message || 'Update failed')
+      }
+    } catch (error) {
+      addNotification(`Update failed: ${error.message}`, 'error')
+    }
+  }
+
+  const checkUpdateStatus = async (sessionId, pollInterval) => {
+    try {
+      const response = await fetch(`/api/amazon/update-status?userId=${session.user.id}&sessionId=${sessionId}`)
+      const data = await response.json()
+      
+      if (data.success && data.session) {
+        setUpdateProgress({
+          ...data.progress,
+          completed: data.session.status === 'completed'
+        })
+        
+        const { data: logs, error: logsError } = await supabase
+          .from('update_logs')
+          .select(`
+            *,
+            products!update_logs_product_id_fkey(supplier_asin)
+          `)
+          .eq('batch_id', sessionId)
+          .order('created_at', { ascending: false })
+          .limit(50)
+        
+        if (logs && !logsError) {
+          setUpdateLogs(logs.map(log => ({
+            asin: log.products?.supplier_asin || 'Unknown',
+            status: log.action,
+            message: log.error_message || 'Updated successfully',
+            created_at: log.created_at
+          })))
+        }
+        
+        if (data.session.status === 'completed' || data.session.status === 'cancelled' || data.session.status === 'failed') {
+          clearInterval(pollInterval)
+          await loadProducts(session.user.id)
+          
+          if (data.session.status === 'completed') {
+            addNotification(`Update completed! Updated: ${data.progress.updated}`, 'success')
+          }
         }
       }
+    } catch (error) {
+      console.error('Error checking update status:', error)
     }
-  } catch (error) {
-    console.error('Error checking update status:', error)
   }
-}
-const handleCancelUpdate = async () => {
-  if (!updateSessionId) {
-    addNotification('No active update to cancel', 'error')
-    return
-  }
-  
-  if (!confirm('Are you sure you want to cancel this update?')) {
-    return
-  }
-  
-  try {
-    const response = await fetch('/api/amazon/update-hourly', {
-      method: 'DELETE',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId: updateSessionId })
-    })
-    
-    const data = await response.json()
-    
-    if (response.ok && data.success) {
-      addNotification('Update cancelled successfully', 'success')
-      setTimeout(async () => {
-        await loadProducts(session.user.id)
-        setShowUpdateModal(false)
-        setUpdateSessionId(null)
-      }, 1000)
-    } else {
-      throw new Error(data.message || 'Cancel failed')
+
+  const handleCancelUpdate = async () => {
+    if (!updateSessionId) {
+      addNotification('No active update to cancel', 'error')
+      return
     }
-  } catch (error) {
-    addNotification(`Failed to cancel: ${error.message}`, 'error')
+    
+    if (!confirm('Are you sure you want to cancel this update?')) {
+      return
+    }
+    
+    try {
+      const response = await fetch('/api/amazon/update-hourly', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId: updateSessionId })
+      })
+      
+      const data = await response.json()
+      
+      if (response.ok && data.success) {
+        addNotification('Update cancelled successfully', 'success')
+        setTimeout(async () => {
+          await loadProducts(session.user.id)
+          setShowUpdateModal(false)
+          setUpdateSessionId(null)
+        }, 1000)
+      } else {
+        throw new Error(data.message || 'Cancel failed')
+      }
+    } catch (error) {
+      addNotification(`Failed to cancel: ${error.message}`, 'error')
+    }
   }
-}
+
   const handleDeleteAll = async () => {
     if (deleteConfirmText !== 'DELETE_ALL_PRODUCTS') {
       addNotification('Please type "DELETE_ALL_PRODUCTS" to confirm', 'error')
@@ -487,6 +514,73 @@ const handleCancelUpdate = async () => {
     setSelectedProducts(prev => 
       prev.includes(productId) ? prev.filter(id => id !== productId) : [...prev, productId]
     )
+  }
+
+  // Quick Affiliate Link Handlers
+  const handleOpenQuickLink = (product) => {
+    if (userStores.length === 0) {
+      if (confirm('You need to create a store first. Go to Stores page?')) {
+        router.push('/stores')
+      }
+      return
+    }
+    
+    setSelectedProductForLink(product)
+    setQuickLinkForm({
+      storeId: userStores[0]?.id || '',
+      affiliateUrl: product.supplier_url || `https://amazon.com.au/dp/${product.supplier_asin}`
+    })
+    setShowQuickLinkModal(true)
+  }
+
+  const handleSaveQuickLink = async (e) => {
+    e.preventDefault()
+    
+    if (!quickLinkForm.storeId) {
+      addNotification('Please select a store', 'error')
+      return
+    }
+    
+    if (!quickLinkForm.affiliateUrl) {
+      addNotification('Please enter an affiliate URL', 'error')
+      return
+    }
+    
+    try {
+      // Check if link already exists
+      const { data: existing } = await supabase
+        .from('affiliate_links')
+        .select('id')
+        .eq('user_id', session.user.id)
+        .eq('store_id', quickLinkForm.storeId)
+        .eq('internal_sku', selectedProductForLink.internal_sku)
+        .eq('is_active', true)
+        .single()
+      
+      if (existing) {
+        addNotification('This product already has a link in this store', 'error')
+        return
+      }
+      
+      const { error } = await supabase
+        .from('affiliate_links')
+        .insert({
+          user_id: session.user.id,
+          store_id: quickLinkForm.storeId,
+          affiliate_url: quickLinkForm.affiliateUrl,
+          internal_sku: selectedProductForLink.internal_sku
+        })
+      
+      if (error) throw error
+      
+      const storeName = userStores.find(s => s.id === quickLinkForm.storeId)?.store_name
+      addNotification(`Affiliate link added to ${storeName}!`, 'success')
+      setShowQuickLinkModal(false)
+      setSelectedProductForLink(null)
+      setQuickLinkForm({ storeId: '', affiliateUrl: '' })
+    } catch (error) {
+      addNotification(`Failed to add link: ${error.message}`, 'error')
+    }
   }
 
   const addNotification = (message, type = 'info') => {
@@ -588,7 +682,7 @@ const handleCancelUpdate = async () => {
   return (
     <DashboardLayout session={session} supabase={supabase} currentPage="amazon-products">
       <div className="h-full bg-gray-50">
-      {/* Toast Notifications */}
+        {/* Toast Notifications */}
         {notifications.length > 0 && (
           <div className="fixed top-4 right-4 z-50 space-y-2">
             {notifications.map((notification) => (
@@ -602,203 +696,139 @@ const handleCancelUpdate = async () => {
             ))}
           </div>
         )}
-        {/* Live Activity Dashboard - Shows during processing AND briefly after completion */}
-          {(
-    csvImportStatus === 'processing' || 
-    (updateSessionId && updateProgress.total > 0) ||
-    csvImportStatus === 'completed' ||
-    updateProgress.completed
-  ) && (
-          <div className="fixed top-0 left-0 right-0 z-40 bg-white border-b border-gray-200 shadow-sm">
-            <div className="max-w-7xl mx-auto px-6 py-3">
-              <div className="space-y-2">
-                <button 
-                  onClick={() => {
-                    if (csvImportStatus === 'processing') setShowImportModal(true)
-                    if (updateSessionId) setShowUpdateModal(true)
-                  }}
-                  className="text-xs text-blue-600 hover:text-blue-700 font-medium"
-                >
-                  View Details
-                </button>
-              </div>
 
-              <div className="space-y-3">
-                {/* CSV Import Activity */}
-                {(csvImportStatus === 'processing' || csvImportStatus === 'completed') && (
-                  <div className={`border rounded-lg p-4 ${
-                    csvImportStatus === 'completed' 
-                      ? 'bg-green-50 border-green-200' 
-                      : 'bg-blue-50 border-blue-200'
-                  }`}>
-                    <div className="flex items-center justify-between mb-2">
-                      <div className="flex items-center gap-3">
-                        {csvImportStatus === 'processing' ? (
-                          <div className="relative">
-                            <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></div>
-                            <div className="absolute inset-0 w-2 h-2 bg-blue-500 rounded-full animate-ping"></div>
-                          </div>
-                        ) : (
-                          <svg className="w-5 h-5 text-green-600" fill="currentColor" viewBox="0 0 20 20">
-                            <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
-                          </svg>
-                        )}
-                        <div>
-                          <div className={`text-sm font-semibold ${
-                            csvImportStatus === 'completed' ? 'text-green-900' : 'text-blue-900'
-                          }`}>
-                            {csvImportStatus === 'completed' ? 'CSV Import Completed' : 'CSV Import Running'}
-                          </div>
-                          <div className={`text-xs ${
-                            csvImportStatus === 'completed' ? 'text-green-700' : 'text-blue-700'
-                          }`}>
-                            {csvImportProgress.processed}/{csvImportProgress.total} products • {csvImportProgress.percentage}% complete
-                          </div>
-                        </div>
+        {/* Compact Status Bar */}
+        {(csvImportStatus === 'processing' || (updateSessionId && updateProgress.total > 0 && !updateProgress.completed)) && (
+          <div className="fixed top-0 left-0 right-0 z-40 bg-gradient-to-r from-blue-600 to-indigo-600 shadow-lg">
+            <div className="max-w-7xl mx-auto px-6 py-2">
+              <div className="flex items-center justify-between gap-4">
+                <div className="flex items-center gap-6">
+                  {csvImportStatus === 'processing' && (
+                    <div className="flex items-center gap-3">
+                      <div className="relative">
+                        <div className="w-2 h-2 bg-white rounded-full animate-pulse"></div>
+                        <div className="absolute inset-0 w-2 h-2 bg-white rounded-full animate-ping opacity-75"></div>
                       </div>
-                      <div className="flex items-center gap-2">
-                        <button
-                          onClick={() => setShowImportModal(true)}
-                          className={`px-3 py-1 text-xs font-medium rounded ${
-                            csvImportStatus === 'completed'
-                              ? 'text-green-700 bg-green-100 hover:bg-green-200'
-                              : 'text-blue-700 bg-blue-100 hover:bg-blue-200'
-                          }`}
-                        >
-                          Details
-                        </button>
-                        {csvImportStatus === 'processing' && (
-                          <button
-                            onClick={handleCancelImport}
-                            className="px-3 py-1 text-xs font-medium text-red-700 bg-red-100 rounded hover:bg-red-200"
-                          >
-                            Cancel
-                          </button>
-                        )}
-                       {csvImportStatus === 'completed' && (
-                          <button
-                            onClick={() => {
-                              // Add session to dismissed list
-                              if (currentCsvSession) {
-                                setDismissedCsvSessions(prev => new Set(prev).add(currentCsvSession))
-                              }
-                              setCsvImportStatus('idle')
-                              setCsvImportProgress({ processed: 0, imported: 0, updated: 0, failed: 0, total: 0, percentage: 0 })
-                              setCurrentCsvSession(null)
-                              setCsvImportDetails([])
-                            }}
-                            className="text-xs text-gray-500 hover:text-gray-700"
-                          >
-                            ✕
-                          </button>
-                        )}
+                      <div className="text-white">
+                        <span className="text-sm font-semibold">CSV Import</span>
+                        <span className="text-xs ml-2 opacity-90">
+                          {csvImportProgress.processed}/{csvImportProgress.total} ({csvImportProgress.percentage}%)
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2 text-xs text-white/80">
+                        <span>✓ {csvImportProgress.imported}</span>
+                        <span>↻ {csvImportProgress.updated}</span>
+                        <span>✕ {csvImportProgress.failed}</span>
                       </div>
                     </div>
-                    {csvImportStatus === 'processing' && (
-                      <>
-                        <div className="w-full bg-blue-200 rounded-full h-2">
-                          <div 
-                            className="bg-blue-600 h-2 rounded-full transition-all duration-500"
-                            style={{ width: `${csvImportProgress.percentage}%` }}
-                          ></div>
-                        </div>
-                        <div className="flex items-center justify-between mt-2 text-xs text-blue-700">
-                          <span>Imported: {csvImportProgress.imported} • Updated: {csvImportProgress.updated}</span>
-                          <span>Failed: {csvImportProgress.failed}</span>
-                        </div>
-                      </>
-                    )}
-                    {csvImportStatus === 'completed' && (
-                      <div className="mt-2 text-xs text-green-700">
-                        ✓ Imported: {csvImportProgress.imported} • Updated: {csvImportProgress.updated} • Failed: {csvImportProgress.failed}
-                      </div>
-                    )}
-                  </div>
-                )}
+                  )}
 
-                {/* Update Activity */}
-                {updateSessionId && updateProgress.total > 0 && (
-                  <div className={`border rounded-lg p-4 ${
-                    updateProgress.completed
-                      ? 'bg-green-50 border-green-200' 
-                      : 'bg-green-50 border-green-200'
-                  }`}>
-                    <div className="flex items-center justify-between mb-2">
-                      <div className="flex items-center gap-3">
-                        {!updateProgress.completed ? (
-                          <div className="relative">
-                            <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
-                            <div className="absolute inset-0 w-2 h-2 bg-green-500 rounded-full animate-ping"></div>
-                          </div>
-                        ) : (
-                          <svg className="w-5 h-5 text-green-600" fill="currentColor" viewBox="0 0 20 20">
-                            <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
-                          </svg>
-                        )}
-                        <div>
-                          <div className="text-sm font-semibold text-green-900">
-                            {updateProgress.completed ? 'Product Update Completed' : 'Product Update Running'}
-                          </div>
-                          <div className="text-xs text-green-700">
-                            {updateProgress.processed}/{updateProgress.total} products • {updateProgress.percentage}% complete
-                          </div>
-                        </div>
+                  {updateSessionId && updateProgress.total > 0 && !updateProgress.completed && (
+                    <div className="flex items-center gap-3">
+                      <div className="relative">
+                        <div className="w-2 h-2 bg-green-300 rounded-full animate-pulse"></div>
+                        <div className="absolute inset-0 w-2 h-2 bg-green-300 rounded-full animate-ping opacity-75"></div>
                       </div>
-                      <div className="flex items-center gap-2">
-                        <button
-                          onClick={() => setShowUpdateModal(true)}
-                          className="px-3 py-1 text-xs font-medium text-green-700 bg-green-100 rounded hover:bg-green-200"
-                        >
-                          Details
-                        </button>
-                        {!updateProgress.completed ? (
-                          <button
-                            onClick={handleCancelUpdate}
-                            className="px-3 py-1 text-xs font-medium text-red-700 bg-red-100 rounded hover:bg-red-200"
-                          >
-                            Cancel
-                          </button>
-                        ) : (
-                          <button
-                            onClick={() => {
-                              setUpdateProgress({ processed: 0, updated: 0, failed: 0, total: 0, percentage: 0, completed: false })
-                              setUpdateSessionId(null)
-                            }}
-                            className="text-xs text-gray-500 hover:text-gray-700"
-                          >
-                            ✕
-                          </button>
-                        )}
+                      <div className="text-white">
+                        <span className="text-sm font-semibold">Update</span>
+                        <span className="text-xs ml-2 opacity-90">
+                          {updateProgress.processed}/{updateProgress.total} ({updateProgress.percentage}%)
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2 text-xs text-white/80">
+                        <span>✓ {updateProgress.updated}</span>
+                        <span>✕ {updateProgress.failed}</span>
                       </div>
                     </div>
-                    {!updateProgress.completed && (
-                      <>
-                        <div className="w-full bg-green-200 rounded-full h-2">
-                          <div 
-                            className="bg-green-600 h-2 rounded-full transition-all duration-500"
-                            style={{ width: `${updateProgress.percentage}%` }}
-                          ></div>
-                        </div>
-                        <div className="flex items-center justify-between mt-2 text-xs text-green-700">
-                          <span>Updated: {updateProgress.updated}</span>
-                          <span>Failed: {updateProgress.failed}</span>
-                        </div>
-                      </>
-                    )}
-                    {updateProgress.completed && (
-                      <div className="mt-2 text-xs text-green-700">
-                        ✓ Updated: {updateProgress.updated} • Failed: {updateProgress.failed}
-                      </div>
-                    )}
-                  </div>
-                )}
+                  )}
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => {
+                      if (csvImportStatus === 'processing') setShowImportModal(true)
+                      if (updateSessionId) setShowUpdateModal(true)
+                    }}
+                    className="px-3 py-1 text-xs font-medium text-white bg-white/20 hover:bg-white/30 rounded transition-colors"
+                  >
+                    Details
+                  </button>
+                  {csvImportStatus === 'processing' && (
+                    <button
+                      onClick={handleCancelImport}
+                      className="px-3 py-1 text-xs font-medium text-white bg-red-500/90 hover:bg-red-600 rounded transition-colors"
+                    >
+                      Cancel
+                    </button>
+                  )}
+                  {updateSessionId && !updateProgress.completed && (
+                    <button
+                      onClick={handleCancelUpdate}
+                      className="px-3 py-1 text-xs font-medium text-white bg-red-500/90 hover:bg-red-600 rounded transition-colors"
+                    >
+                      Cancel
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
           </div>
         )}
 
-        {/* Add padding when dashboard is visible */}
-        <div className={`${(csvImportStatus === 'processing' || updateSessionId) ? 'pt-32' : ''}`}></div>
+        {/* Completion Toasts */}
+        {(csvImportStatus === 'completed' || updateProgress.completed) && (
+          <div className="fixed top-4 right-4 z-50 space-y-2">
+            {csvImportStatus === 'completed' && (
+              <div className="bg-green-500 text-white px-4 py-3 rounded-lg shadow-lg flex items-center gap-3">
+                <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                  <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                </svg>
+                <div>
+                  <div className="font-semibold text-sm">CSV Import Complete!</div>
+                  <div className="text-xs opacity-90">
+                    Imported: {csvImportProgress.imported} • Updated: {csvImportProgress.updated}
+                  </div>
+                </div>
+                <button
+                  onClick={() => {
+                    setCsvImportStatus('idle')
+                    setCsvImportProgress({ processed: 0, imported: 0, updated: 0, failed: 0, total: 0, percentage: 0 })
+                    setCurrentCsvSession(null)
+                  }}
+                  className="ml-2 text-white hover:text-gray-200"
+                >
+                  ✕
+                </button>
+              </div>
+            )}
+            {updateProgress.completed && (
+              <div className="bg-green-500 text-white px-4 py-3 rounded-lg shadow-lg flex items-center gap-3">
+                <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                  <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                </svg>
+                <div>
+                  <div className="font-semibold text-sm">Update Complete!</div>
+                  <div className="text-xs opacity-90">
+                    Updated: {updateProgress.updated} • Failed: {updateProgress.failed}
+                  </div>
+                </div>
+                <button
+                  onClick={() => {
+                    setUpdateProgress({ processed: 0, updated: 0, failed: 0, total: 0, percentage: 0, completed: false })
+                    setUpdateSessionId(null)
+                  }}
+                  className="ml-2 text-white hover:text-gray-200"
+                >
+                  ✕
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Add padding when status bar is visible */}
+        <div className={`${(csvImportStatus === 'processing' || (updateSessionId && !updateProgress.completed)) ? 'pt-12' : ''}`}></div>
+
         <div className="bg-white">
           {/* Header */}
           <div className="px-6 py-4 border-b border-gray-200">
@@ -983,77 +1013,74 @@ const handleCancelUpdate = async () => {
                           </div>
                         </div>
                       </td>
-                    <td className="px-4 py-2 whitespace-nowrap">
-                    <span className="text-[11px] text-gray-600">
-                      {new Date(product.created_at).toLocaleDateString('en-US', { 
-                        month: 'short', 
-                        day: 'numeric', 
-                        year: 'numeric' 
-                      })}
-                    </span>
-                  </td>
-
-                  {/* NEW: Last Updated Column */}
-                  <td className="px-4 py-2 whitespace-nowrap">
-                    <div className="flex flex-col gap-0.5">
-                      <span className="text-[12px] text-gray-600">
-                        {product.last_scraped ? (
-                          new Date(product.last_scraped).toLocaleDateString('en-US', { 
+                      <td className="px-4 py-2 whitespace-nowrap">
+                        <span className="text-[11px] text-gray-600">
+                          {new Date(product.created_at).toLocaleDateString('en-US', { 
                             month: 'short', 
                             day: 'numeric', 
-                            hour: '2-digit',
-                            minute: '2-digit'
-                          })
-                        ) : 'Never'}
-                      </span>
-                      {(() => {
-                        if (!product.last_scraped) return null
-                        
-                        const lastScraped = new Date(product.last_scraped).getTime()
-                        const now = Date.now()
-                        const minutesAgo = Math.floor((now - lastScraped) / 60000)
-                        const hoursAgo = Math.floor(minutesAgo / 60)
-                        const daysAgo = Math.floor(hoursAgo / 24)
-                        
-                        let timeAgo = ''
-                        let colorClass = 'text-gray-500'
-                        
-                        if (minutesAgo < 5) {
-                          timeAgo = 'Just now'
-                          colorClass = 'text-green-600'
-                        } else if (minutesAgo < 60) {
-                          timeAgo = `${minutesAgo}m ago`
-                          colorClass = 'text-green-600'
-                        } else if (hoursAgo < 24) {
-                          timeAgo = `${hoursAgo}h ago`
-                          colorClass = hoursAgo < 2 ? 'text-green-600' : 'text-yellow-600'
-                        } else if (daysAgo < 7) {
-                          timeAgo = `${daysAgo}d ago`
-                          colorClass = 'text-orange-600'
-                        } else {
-                          timeAgo = `${Math.floor(daysAgo / 7)}w ago`
-                          colorClass = 'text-red-600'
-                        }
-                        
-                        return (
-                          <span className={`text-[11px] font-medium ${colorClass}`}>
-                            {timeAgo}
+                            year: 'numeric' 
+                          })}
+                        </span>
+                      </td>
+                      <td className="px-4 py-2 whitespace-nowrap">
+                        <div className="flex flex-col gap-0.5">
+                          <span className="text-[12px] text-gray-600">
+                            {product.last_scraped ? (
+                              new Date(product.last_scraped).toLocaleDateString('en-US', { 
+                                month: 'short', 
+                                day: 'numeric', 
+                                hour: '2-digit',
+                                minute: '2-digit'
+                              })
+                            ) : 'Never'}
                           </span>
-                        )
-                      })()}
-                    </div>
-                  </td>
-
-                  <td className="px-4 py-2 whitespace-nowrap">
-                    <span className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium ${
-                      product.stock_status === 'In Stock' ? 'bg-green-100 text-green-800' :
-                      product.stock_status === 'Limited Stock' ? 'bg-yellow-100 text-yellow-800' :
-                      'bg-red-100 text-red-800'
-                    }`}>
-                      {product.stock_status === 'In Stock' ? 'In Stock' :
-                      product.stock_status === 'Limited Stock' ? 'Limited' : 'Out of Stock'}
-                    </span>
-                  </td>
+                          {(() => {
+                            if (!product.last_scraped) return null
+                            
+                            const lastScraped = new Date(product.last_scraped).getTime()
+                            const now = Date.now()
+                            const minutesAgo = Math.floor((now - lastScraped) / 60000)
+                            const hoursAgo = Math.floor(minutesAgo / 60)
+                            const daysAgo = Math.floor(hoursAgo / 24)
+                            
+                            let timeAgo = ''
+                            let colorClass = 'text-gray-500'
+                            
+                            if (minutesAgo < 5) {
+                              timeAgo = 'Just now'
+                              colorClass = 'text-green-600'
+                            } else if (minutesAgo < 60) {
+                              timeAgo = `${minutesAgo}m ago`
+                              colorClass = 'text-green-600'
+                            } else if (hoursAgo < 24) {
+                              timeAgo = `${hoursAgo}h ago`
+                              colorClass = hoursAgo < 2 ? 'text-green-600' : 'text-yellow-600'
+                            } else if (daysAgo < 7) {
+                              timeAgo = `${daysAgo}d ago`
+                              colorClass = 'text-orange-600'
+                            } else {
+                              timeAgo = `${Math.floor(daysAgo / 7)}w ago`
+                              colorClass = 'text-red-600'
+                            }
+                            
+                            return (
+                              <span className={`text-[11px] font-medium ${colorClass}`}>
+                                {timeAgo}
+                              </span>
+                            )
+                          })()}
+                        </div>
+                      </td>
+                      <td className="px-4 py-2 whitespace-nowrap">
+                        <span className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium ${
+                          product.stock_status === 'In Stock' ? 'bg-green-100 text-green-800' :
+                          product.stock_status === 'Limited Stock' ? 'bg-yellow-100 text-yellow-800' :
+                          'bg-red-100 text-red-800'
+                        }`}>
+                          {product.stock_status === 'In Stock' ? 'In Stock' :
+                          product.stock_status === 'Limited Stock' ? 'Limited' : 'Out of Stock'}
+                        </span>
+                      </td>
                       <td className="px-4 py-2">
                         <div className="flex items-center justify-center gap-1.5">
                           {(() => {
@@ -1112,48 +1139,54 @@ const handleCancelUpdate = async () => {
                           </div>
                         </div>
                       </td>
-                   <td className="px-4 py-3 whitespace-nowrap text-center">
-                  <div className="flex items-center justify-center gap-2">
-                    {updatingProducts.has(product.id) ? (
-                      <div className="flex items-center gap-2">
-                        <svg className="w-4 h-4 text-blue-600 animate-spin" fill="none" viewBox="0 0 24 24">
-                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                        </svg>
-                        <span className="text-xs text-blue-600 font-medium">Updating...</span>
-                        {/* THIS IS THE CANCEL BUTTON - REPLACE THE OLD ONE */}
-                        <button
-                          onClick={() => {
-                            const controller = abortControllers.current.get(product.id)
-                            if (controller) {
-                              controller.abort()
-                            }
-                          }}
-                          className="text-xs text-red-600 hover:text-red-700 font-medium ml-1"
-                        >
-                          Cancel
-                        </button>
-                      </div>
-                    ) : (
-                      <>
-                        <button 
-                          onClick={() => handleUpdateSingleProduct(product.id)} 
-                          className="text-xs text-blue-600 hover:text-blue-700 font-medium"
-                        >
-                          Update
-                        </button>
-                        <a 
-                          href={product.supplier_url} 
-                          target="_blank" 
-                          rel="noopener noreferrer" 
-                          className="text-xs text-gray-600 hover:text-gray-900 font-medium"
-                        >
-                          View
-                        </a>
-                      </>
-                    )}
-                  </div>
-                </td>
+                      <td className="px-4 py-3 whitespace-nowrap text-center">
+                        <div className="flex items-center justify-center gap-2">
+                          {updatingProducts.has(product.id) ? (
+                            <div className="flex items-center gap-2">
+                              <svg className="w-4 h-4 text-blue-600 animate-spin" fill="none" viewBox="0 0 24 24">
+                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                              </svg>
+                              <span className="text-xs text-blue-600 font-medium">Updating...</span>
+                              <button
+                                onClick={() => {
+                                  const controller = abortControllers.current.get(product.id)
+                                  if (controller) {
+                                    controller.abort()
+                                  }
+                                }}
+                                className="text-xs text-red-600 hover:text-red-700 font-medium ml-1"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          ) : (
+                            <>
+                              <button 
+                                onClick={() => handleOpenQuickLink(product)} 
+                                className="text-xs text-green-600 hover:text-green-700 font-medium"
+                                title="Add to Store"
+                              >
+                                Link
+                              </button>
+                              <button 
+                                onClick={() => handleUpdateSingleProduct(product.id)} 
+                                className="text-xs text-blue-600 hover:text-blue-700 font-medium"
+                              >
+                                Update
+                              </button>
+                              <a 
+                                href={product.supplier_url} 
+                                target="_blank" 
+                                rel="noopener noreferrer" 
+                                className="text-xs text-gray-600 hover:text-gray-900 font-medium"
+                              >
+                                View
+                              </a>
+                            </>
+                          )}
+                        </div>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -1161,6 +1194,106 @@ const handleCancelUpdate = async () => {
             </div>
           )}
         </div>
+
+        {/* Quick Affiliate Link Modal */}
+        {showQuickLinkModal && selectedProductForLink && (
+          <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+            <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full">
+              <div className="px-6 py-4 border-b border-gray-100">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-lg font-bold text-gray-900">Add Affiliate Link</h3>
+                  <button
+                    onClick={() => {
+                      setShowQuickLinkModal(false)
+                      setSelectedProductForLink(null)
+                      setQuickLinkForm({ storeId: '', affiliateUrl: '' })
+                    }}
+                    className="p-2 hover:bg-gray-100 rounded-lg text-gray-500 hover:text-gray-700 transition-colors"
+                  >
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
+
+              <form onSubmit={handleSaveQuickLink} className="p-6 space-y-4">
+                {/* Product Preview */}
+                <div className="flex items-center gap-3 p-3 bg-blue-50 rounded-lg border border-blue-200">
+                  <img 
+                    src={selectedProductForLink.image_urls?.[0] || 'https://via.placeholder.com/50'} 
+                    alt={selectedProductForLink.title}
+                    className="w-12 h-12 rounded object-cover flex-shrink-0"
+                    onError={(e) => e.target.src = 'https://via.placeholder.com/50'}
+                  />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-semibold text-gray-900 line-clamp-2">{selectedProductForLink.title}</p>
+                    <p className="text-xs text-gray-600">{selectedProductForLink.brand} • {selectedProductForLink.supplier_asin}</p>
+                  </div>
+                </div>
+
+                {/* Store Selection - FIRST */}
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">
+                    Select Store <span className="text-red-500">*</span>
+                  </label>
+                  <select
+                    value={quickLinkForm.storeId}
+                    onChange={(e) => setQuickLinkForm({...quickLinkForm, storeId: e.target.value})}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    required
+                  >
+                    <option value="">Choose a store...</option>
+                    {userStores.map(store => (
+                      <option key={store.id} value={store.id}>{store.store_name}</option>
+                    ))}
+                  </select>
+                  {/* <p className="text-xs text-gray-500 mt-1.5">
+                    You can add the same product to multiple stores with different links
+                  </p> */}
+                </div>
+
+                {/* Affiliate URL - SECOND */}
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">
+                    Affiliate URL <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="url"
+                    // value={quickLinkForm.affiliateUrl}
+                    onChange={(e) => setQuickLinkForm({...quickLinkForm, affiliateUrl: e.target.value})}
+                    placeholder="https://amzn.to/..."
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    required
+                  />
+                  {/* <p className="text-xs text-gray-500 mt-1.5">
+                    Use your Amazon Associates short link (amzn.to) or full affiliate URL
+                  </p> */}
+                </div>
+
+                <div className="flex gap-3 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowQuickLinkModal(false)
+                      setSelectedProductForLink(null)
+                      setQuickLinkForm({ storeId: '', affiliateUrl: '' })
+                    }}
+                    className="flex-1 px-4 py-2 text-sm font-semibold text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    className="flex-1 px-4 py-2 text-sm font-semibold text-white bg-green-600 rounded-lg hover:bg-green-700 transition-colors"
+                  >
+                    Add Link
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
 
         {/* Update Confirmation Modal */}
         {showUpdateConfirm && (
