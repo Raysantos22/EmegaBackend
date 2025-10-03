@@ -1,6 +1,7 @@
-// pages/api/amazon/import.js - Fixed with title truncation
+// pages/api/amazon/import.js - Fixed with short URL support (amzn.to)
 import { supabase } from '../../../lib/supabase'
 import { scrapeAmazonProduct, scrapeAmazonProductWithVariants, calculateStockSummary } from '../../../lib/amazonScraper'
+import axios from 'axios'
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -23,7 +24,7 @@ export default async function handler(req, res) {
 
     console.log(`Importing Amazon ${country} product: ${input}`)
 
-    const asin = extractAsin(input)
+    const asin = await extractAsin(input)
     if (!asin) {
       return res.status(400).json({ 
         error: 'Invalid input. Please provide a valid Amazon ASIN (10 characters) or URL.' 
@@ -349,13 +350,55 @@ function truncateString(str, maxLength) {
   return str.substring(0, maxLength - 3) + '...'
 }
 
-function extractAsin(input) {
+async function extractAsin(input) {
   const trimmedInput = input.trim()
   
+  // Direct ASIN input
   if (/^[A-Z0-9]{10}$/i.test(trimmedInput)) {
     return trimmedInput.toUpperCase()
   }
   
+  let urlToProcess = trimmedInput
+  
+  // Handle any URL (including shortened ones)
+  if (trimmedInput.match(/^https?:\/\//i)) {
+    try {
+      console.log('Fetching URL to resolve final destination...')
+      const response = await axios.get(trimmedInput, {
+        maxRedirects: 10,
+        validateStatus: (status) => status >= 200 && status < 400,
+        timeout: 15000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+      })
+      
+      // Get the final URL after all redirects
+      urlToProcess = response.request.res?.responseUrl || 
+                     response.request?.path || 
+                     response.config.url || 
+                     trimmedInput
+      
+      console.log('Resolved to:', urlToProcess)
+      
+      // Also check the HTML content for ASIN
+      if (response.data && typeof response.data === 'string') {
+        // Look for ASIN in meta tags or page content
+        const metaAsinMatch = response.data.match(/data-asin="([A-Z0-9]{10})"/i) ||
+                             response.data.match(/asin["\s:]+([A-Z0-9]{10})/i)
+        
+        if (metaAsinMatch) {
+          console.log('Found ASIN in page content:', metaAsinMatch[1])
+          return metaAsinMatch[1].toUpperCase()
+        }
+      }
+    } catch (error) {
+      console.warn('Failed to fetch URL:', error.message)
+      // Continue with original URL in case patterns still match
+    }
+  }
+  
+  // Extract ASIN from URL patterns
   const asinPatterns = [
     /\/dp\/([A-Z0-9]{10})/i,
     /\/gp\/product\/([A-Z0-9]{10})/i,
@@ -365,8 +408,9 @@ function extractAsin(input) {
   ]
   
   for (const pattern of asinPatterns) {
-    const match = trimmedInput.match(pattern)
+    const match = urlToProcess.match(pattern)
     if (match) {
+      console.log('Extracted ASIN from URL pattern:', match[1])
       return match[1].toUpperCase()
     }
   }
