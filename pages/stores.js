@@ -1,4 +1,4 @@
-// pages/stores.js
+// pages/stores.js - Complete version with Bulk Import
 import { useState, useEffect, useCallback } from 'react'
 import { useRouter } from 'next/router'
 import { supabase } from '../lib/supabase'
@@ -14,6 +14,7 @@ export default function StoresPage() {
   // Modals
   const [showStoreModal, setShowStoreModal] = useState(false)
   const [showAddLinkModal, setShowAddLinkModal] = useState(false)
+  const [showBulkImportModal, setShowBulkImportModal] = useState(false)
   const [showStoreDetailsModal, setShowStoreDetailsModal] = useState(false)
   const [showProductDetailsModal, setShowProductDetailsModal] = useState(false)
   const [selectedStore, setSelectedStore] = useState(null)
@@ -28,6 +29,57 @@ export default function StoresPage() {
     selectedProduct: null,
     notes: ''
   })
+  
+  // Bulk import states
+  const [bulkImportForm, setBulkImportForm] = useState({
+    storeId: null,
+    csvData: '',
+    csvFile: null
+  })
+  const [bulkImporting, setBulkImporting] = useState(false)
+  const [bulkImportResults, setBulkImportResults] = useState(null)
+  const [csvPreview, setCsvPreview] = useState(null)
+
+  const handleFileUpload = (e) => {
+    const file = e.target.files[0]
+    if (!file) return
+
+    const reader = new FileReader()
+    reader.onload = (event) => {
+      const csvText = event.target.result
+      setBulkImportForm({
+        ...bulkImportForm,
+        csvData: csvText,
+        csvFile: file
+      })
+      generateCsvPreview(csvText)
+    }
+    reader.readAsText(file)
+  }
+
+  const generateCsvPreview = (csvText) => {
+    if (!csvText || !csvText.trim()) {
+      setCsvPreview(null)
+      return
+    }
+
+    const lines = csvText.split(/[\r\n]+/).filter(line => line.trim())
+    if (lines.length === 0) {
+      setCsvPreview(null)
+      return
+    }
+
+    const headers = lines[0].split(',').map(h => h.trim())
+    const rows = lines.slice(1, Math.min(6, lines.length)).map(line => 
+      line.split(',').map(v => v.trim())
+    )
+
+    setCsvPreview({
+      headers,
+      rows,
+      totalRows: lines.length - 1
+    })
+  }
   
   const [searchTerm, setSearchTerm] = useState('')
   const [productSearchTerm, setProductSearchTerm] = useState('')
@@ -209,6 +261,45 @@ export default function StoresPage() {
     }
   }
 
+  const handleBulkImport = async (e) => {
+    e.preventDefault()
+    
+    if (!bulkImportForm.storeId || !bulkImportForm.csvData) {
+      addNotification('Please select a store and paste CSV data', 'error')
+      return
+    }
+
+    setBulkImporting(true)
+    setBulkImportResults(null)
+
+    try {
+      const response = await fetch('/api/stores/bulk-import-affiliates', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId: session.user.id,
+          storeId: bulkImportForm.storeId,
+          csvData: bulkImportForm.csvData
+        })
+      })
+
+      const data = await response.json()
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Bulk import failed')
+      }
+
+      setBulkImportResults(data)
+      addNotification(data.message, 'success')
+      await loadStores(session.user.id)
+      
+    } catch (error) {
+      addNotification(`Bulk import failed: ${error.message}`, 'error')
+    } finally {
+      setBulkImporting(false)
+    }
+  }
+
   const handleDeleteStore = async (storeId) => {
     if (!confirm('Delete this store, its API key, and all affiliate links?')) return
 
@@ -294,11 +385,18 @@ export default function StoresPage() {
     setShowProductDetailsModal(true)
   }
 
+  const openBulkImport = (store) => {
+    setSelectedStore(store)
+    setBulkImportForm({ storeId: store.id, csvData: '', csvFile: null })
+    setBulkImportResults(null)
+    setShowBulkImportModal(true)
+  }
+
   if (loading) {
     return (
       <DashboardLayout session={session} supabase={supabase} currentPage="stores">
         <div className="flex items-center justify-center h-64">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600"></div>
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-red-600"></div>
         </div>
       </DashboardLayout>
     )
@@ -314,7 +412,7 @@ export default function StoresPage() {
               <div key={notification.id} className={`p-4 rounded-xl shadow-lg border backdrop-blur-sm ${
                 notification.type === 'success' ? 'bg-green-50/90 border-green-200 text-green-800' :
                 notification.type === 'error' ? 'bg-red-50/90 border-red-200 text-red-800' :
-                'bg-blue-50/90 border-blue-200 text-blue-800'
+                'bg-red-50/90 border-red-200 text-red-800'
               }`}>
                 <p className="text-sm font-medium">{notification.message}</p>
               </div>
@@ -332,7 +430,7 @@ export default function StoresPage() {
               </div>
               <button 
                 onClick={() => setShowStoreModal(true)}
-                className="px-4 py-2 text-sm font-semibold text-white bg-blue-600 rounded-lg hover:bg-blue-700 shadow-sm flex items-center gap-2"
+                className="px-4 py-2 text-sm font-semibold text-white bg-red-600 rounded-lg hover:bg-red-700 shadow-sm flex items-center gap-2"
               >
                 <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
@@ -351,7 +449,7 @@ export default function StoresPage() {
                 placeholder="Search stores or products..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-full pl-10 pr-4 py-2.5 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                className="w-full pl-10 pr-4 py-2.5 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent"
               />
             </div>
           </div>
@@ -370,7 +468,7 @@ export default function StoresPage() {
               <p className="text-sm text-gray-600 mb-6">Create your first store to start managing affiliate links</p>
               <button 
                 onClick={() => setShowStoreModal(true)}
-                className="inline-flex items-center px-6 py-2.5 text-sm font-semibold text-white bg-blue-600 rounded-lg hover:bg-blue-700 shadow-sm"
+                className="inline-flex items-center px-6 py-2.5 text-sm font-semibold text-white bg-red-600 rounded-lg hover:bg-red-700 shadow-sm"
               >
                 <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
@@ -386,8 +484,7 @@ export default function StoresPage() {
                   onClick={() => openStoreDetails(store)}
                   className="bg-white rounded-lg shadow-sm hover:shadow-md transition-all duration-200 overflow-hidden border border-gray-200 cursor-pointer group"
                 >
-                  {/* Store Card - Simple Design */}
-                  <div className="bg-gradient-to-br from-blue-500 to-blue-600 p-6">
+                  <div className="bg-gradient-to-br from-red-500 to-red-600 p-6">
                     <div className="flex items-center justify-between mb-3">
                       <div className="w-12 h-12 rounded-lg bg-white/20 backdrop-blur-sm flex items-center justify-center">
                         <span className="text-xl font-bold text-white">
@@ -395,6 +492,18 @@ export default function StoresPage() {
                         </span>
                       </div>
                       <div className="flex gap-1">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            openBulkImport(store)
+                          }}
+                          className="p-1.5 rounded-md bg-white/20 hover:bg-white/30 text-white transition-all"
+                          title="Bulk Import"
+                        >
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                          </svg>
+                        </button>
                         <button
                           onClick={(e) => {
                             e.stopPropagation()
@@ -424,7 +533,7 @@ export default function StoresPage() {
                       </div>
                     </div>
                     <h3 className="text-lg font-bold text-white mb-1">{store.store_name}</h3>
-                    <p className="text-blue-100 text-sm flex items-center gap-1.5">
+                    <p className="text-red-100 text-sm flex items-center gap-1.5">
                       <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
                       </svg>
@@ -437,88 +546,216 @@ export default function StoresPage() {
           )}
         </div>
 
-        {/* Create Store Modal */}
-        {showStoreModal && (
+        {/* Bulk Import Modal */}
+        {showBulkImportModal && selectedStore && (
           <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-            <div className="bg-white rounded-xl shadow-2xl max-w-md w-full">
-              <div className="px-6 py-4 border-b border-gray-100">
-                <h3 className="text-lg font-bold text-gray-900">Create New Store</h3>
-              </div>
-              {newlyCreatedStore ? (
-                <div className="p-6">
-                  <div className="bg-green-50 border border-green-200 rounded-lg p-4 mb-4">
-                    <p className="text-sm font-semibold text-green-900 mb-2">Store created successfully!</p>
-                    <p className="text-xs text-green-700 mb-3">Save this API key - you can view it later in the store details.</p>
-                    <code className="text-xs bg-white px-3 py-2 rounded block break-all border border-green-300 font-mono text-green-900">
-                      {newlyCreatedStore.apiKey}
-                    </code>
-                    <button
-                      onClick={() => copyToClipboard(newlyCreatedStore.apiKey, 'API key copied')}
-                      className="mt-3 w-full px-4 py-2 text-sm font-semibold text-green-700 bg-green-100 rounded-lg hover:bg-green-200 transition-colors"
-                    >
-                      Copy API Key
-                    </button>
+            <div className="bg-white rounded-xl shadow-2xl max-w-3xl w-full max-h-[90vh] overflow-hidden flex flex-col">
+              <div className="px-6 py-4 border-b border-gray-100 bg-gradient-to-r from-red-500 to-red-600">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="text-xl font-bold text-white">Bulk Import Affiliate Links</h3>
+                    <p className="text-red-100 text-sm mt-1">Import to: {selectedStore.store_name}</p>
                   </div>
                   <button
                     onClick={() => {
-                      setShowStoreModal(false)
-                      setNewlyCreatedStore(null)
-                      setStoreForm({ storeName: '' })
+                      setShowBulkImportModal(false)
+                      setBulkImportForm({ storeId: null, csvData: '' })
+                      setBulkImportResults(null)
                     }}
-                    className="w-full px-4 py-2 text-sm font-semibold text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors"
+                    className="p-2 rounded-lg hover:bg-white/20 text-white transition-colors"
                   >
-                    Done
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                    </svg>
                   </button>
                 </div>
-              ) : (
-                <form onSubmit={handleCreateStore} className="p-6 space-y-4">
-                  <div>
-                    <label className="block text-sm font-semibold text-gray-700 mb-2">
-                      Store Name <span className="text-red-500">*</span>
-                    </label>
-                    <input
-                      type="text"
-                      value={storeForm.storeName}
-                      onChange={(e) => setStoreForm({...storeForm, storeName: e.target.value})}
-                      placeholder="e.g., Petacular"
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                      required
-                    />
-                    <p className="text-xs text-gray-500 mt-1.5">Choose a unique name for this store</p>
-                  </div>
-                  <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
-                    <p className="text-xs text-blue-800">An API key will be automatically generated for this store</p>
-                  </div>
-                  <div className="flex gap-3 pt-2">
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-6">
+                {bulkImportResults ? (
+                  <div className="space-y-4">
+                    <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+                      <h4 className="font-bold text-green-900 mb-2">Import Complete!</h4>
+                      <p className="text-sm text-green-800">{bulkImportResults.message}</p>
+                    </div>
+
+                    <div className="grid grid-cols-3 gap-4">
+                      <div className="bg-green-50 border border-green-200 rounded-lg p-4 text-center">
+                        <div className="text-3xl font-bold text-green-600">{bulkImportResults.summary.added}</div>
+                        <div className="text-sm text-green-700 mt-1">Added</div>
+                      </div>
+                      <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-center">
+                        <div className="text-3xl font-bold text-red-600">{bulkImportResults.summary.failed}</div>
+                        <div className="text-sm text-red-700 mt-1">Failed</div>
+                      </div>
+                      <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 text-center">
+                        <div className="text-3xl font-bold text-gray-600">{bulkImportResults.summary.skipped}</div>
+                        <div className="text-sm text-gray-700 mt-1">Skipped</div>
+                      </div>
+                    </div>
+
+                    {bulkImportResults.results.failed.length > 0 && (
+                      <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+                        <h5 className="font-semibold text-red-900 mb-2 text-sm">Failed Items:</h5>
+                        <div className="space-y-2 max-h-40 overflow-y-auto">
+                          {bulkImportResults.results.failed.map((item, idx) => (
+                            <div key={idx} className="text-xs text-red-800 bg-white rounded p-2">
+                              <span className="font-medium">Row {item.row}:</span> {item.error}
+                              {item.sku && <span className="text-red-600"> (SKU: {item.sku})</span>}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {bulkImportResults.results.skipped.length > 0 && (
+                      <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
+                        <h5 className="font-semibold text-gray-900 mb-2 text-sm">Skipped Items:</h5>
+                        <div className="space-y-2 max-h-40 overflow-y-auto">
+                          {bulkImportResults.results.skipped.map((item, idx) => (
+                            <div key={idx} className="text-xs text-gray-800 bg-white rounded p-2">
+                              <span className="font-medium">Row {item.row}:</span> {item.reason}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
                     <button
-                      type="button"
                       onClick={() => {
-                        setShowStoreModal(false)
-                        setStoreForm({ storeName: '' })
+                        setShowBulkImportModal(false)
+                        setBulkImportForm({ storeId: null, csvData: '' })
+                        setBulkImportResults(null)
                       }}
-                      className="flex-1 px-4 py-2 text-sm font-semibold text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+                      className="w-full px-4 py-2 text-sm font-semibold text-white bg-red-600 rounded-lg hover:bg-red-700"
                     >
-                      Cancel
-                    </button>
-                    <button
-                      type="submit"
-                      className="flex-1 px-4 py-2 text-sm font-semibold text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors"
-                    >
-                      Create Store
+                      Close
                     </button>
                   </div>
-                </form>
-              )}
+                ) : (
+                  <form onSubmit={handleBulkImport} className="space-y-4">
+                    <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+                      <h4 className="font-semibold text-red-900 mb-2 text-sm">CSV Format:</h4>
+                      <code className="text-xs bg-white px-2 py-1 rounded block font-mono text-gray-800 mb-2">
+                        link,sku<br/>
+                        https://amzn.to/abc,CUSTOM1<br/>
+                        https://amzn.to/def,CUSTOM2
+                      </code>
+                      <p className="text-xs text-red-800">
+                        Upload a CSV file or paste the data. Each row should have the affiliate link and the product SKU.
+                      </p>
+                    </div>
+
+                    {/* File Upload Option */}
+                    <div>
+                      <label className="block text-sm font-semibold text-gray-700 mb-2">
+                        Upload CSV File
+                      </label>
+                      <div className="relative">
+                        <input
+                          type="file"
+                          accept=".csv"
+                          onChange={handleFileUpload}
+                          className="hidden"
+                          id="csv-file-upload"
+                        />
+                        <label
+                          htmlFor="csv-file-upload"
+                          className="flex items-center justify-center gap-2 w-full px-4 py-3 border-2 border-dashed border-gray-300 rounded-lg hover:border-red-400 hover:bg-red-50 transition-colors cursor-pointer"
+                        >
+                          <svg className="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                          </svg>
+                          <span className="text-sm text-gray-600">
+                            {bulkImportForm.csvFile ? bulkImportForm.csvFile.name : 'Click to upload CSV file'}
+                          </span>
+                        </label>
+                      </div>
+                      {bulkImportForm.csvFile && (
+                        <button
+                          type="button"
+                          onClick={() => setBulkImportForm({...bulkImportForm, csvFile: null, csvData: ''})}
+                          className="mt-2 text-xs text-red-600 hover:text-red-700"
+                        >
+                          Clear file
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="relative">
+                      <div className="absolute inset-0 flex items-center">
+                        <div className="w-full border-t border-gray-300"></div>
+                      </div>
+                      <div className="relative flex justify-center text-xs">
+                        <span className="px-2 bg-white text-gray-500">OR</span>
+                      </div>
+                    </div>
+
+                    {/* Paste CSV Data Option */}
+                    <div>
+                      <label className="block text-sm font-semibold text-gray-700 mb-2">
+                        Paste CSV Data
+                      </label>
+                      <textarea
+                        value={bulkImportForm.csvData}
+                        onChange={(e) => setBulkImportForm({...bulkImportForm, csvData: e.target.value, csvFile: null})}
+                        placeholder="link,sku&#10;https://amzn.to/abc,CUSTOM1&#10;https://amzn.to/def,CUSTOM2"
+                        rows={8}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent font-mono text-sm"
+                        disabled={!!bulkImportForm.csvFile}
+                      />
+                      <p className="text-xs text-gray-500 mt-1.5">
+                        Paste your CSV data with headers: link, sku
+                      </p>
+                    </div>
+
+                    <div className="flex gap-3">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowBulkImportModal(false)
+                          setBulkImportForm({ storeId: null, csvData: '', csvFile: null })
+                        }}
+                        className="flex-1 px-4 py-2 text-sm font-semibold text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
+                        disabled={bulkImporting}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="submit"
+                        className="flex-1 px-4 py-2 text-sm font-semibold text-white bg-red-600 rounded-lg hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                        disabled={bulkImporting || (!bulkImportForm.csvData && !bulkImportForm.csvFile)}
+                      >
+                        {bulkImporting ? (
+                          <>
+                            <svg className="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
+                              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                            </svg>
+                            Importing...
+                          </>
+                        ) : (
+                          <>
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                            </svg>
+                            Import Affiliate Links
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </form>
+                )}
+              </div>
             </div>
           </div>
         )}
 
-        {/* Store Details Modal */}
+        {/* Store Details Modal - continues below */}
         {showStoreDetailsModal && selectedStore && (
           <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
             <div className="bg-white rounded-xl shadow-2xl max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col">
-              {/* Header with Store Name and API Key */}
-              <div className="px-6 py-4 border-b border-gray-100 bg-gradient-to-r from-blue-500 to-blue-600">
+              <div className="px-6 py-4 border-b border-gray-100 bg-gradient-to-r from-red-500 to-red-600">
                 <div className="flex items-start justify-between">
                   <div className="flex items-center gap-3">
                     <div className="w-12 h-12 rounded-lg bg-white/20 backdrop-blur-sm flex items-center justify-center flex-shrink-0">
@@ -528,7 +765,7 @@ export default function StoresPage() {
                     </div>
                     <div>
                       <h3 className="text-xl font-bold text-white">{selectedStore.store_name}</h3>
-                      <p className="text-blue-100 text-sm">{selectedStore.links.length} products</p>
+                      <p className="text-red-100 text-sm">{selectedStore.links.length} products</p>
                     </div>
                   </div>
                   <button
@@ -540,28 +777,9 @@ export default function StoresPage() {
                     </svg>
                   </button>
                 </div>
-                
-                {/* API Key in Header */}
-                {/* {selectedStore.apiKey && (
-                  <div className="mt-4 bg-white/10 backdrop-blur-sm rounded-lg p-3">
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-xs font-semibold text-white uppercase tracking-wide">API Key</span>
-                    </div>
-                    <code className="text-xs bg-white/20 px-2 py-1.5 rounded block break-all font-mono text-white">
-                      {selectedStore.apiKey.key}
-                    </code>
-                    <button
-                      onClick={() => copyToClipboard(selectedStore.apiKey.key, 'API key copied')}
-                      className="mt-2 w-full px-3 py-1.5 text-xs font-semibold text-blue-600 bg-white rounded-md hover:bg-blue-50 transition-colors"
-                    >
-                      Copy API Key
-                    </button>
-                  </div>
-                )} */}
               </div>
 
               <div className="flex-1 overflow-y-auto p-6">
-                {/* API Endpoint */}
                 <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 mb-6">
                   <h4 className="text-xs font-bold text-gray-700 uppercase tracking-wide mb-2">API Endpoint</h4>
                   <code className="text-xs bg-white px-2 py-1.5 rounded block break-all border border-gray-300 font-mono text-gray-900 mb-2">
@@ -578,19 +796,32 @@ export default function StoresPage() {
                   </button>
                 </div>
 
-                {/* Products Grid */}
                 <div className="flex items-center justify-between mb-4">
                   <h4 className="text-sm font-bold text-gray-900">Products ({selectedStore.links.length})</h4>
-                  <button
-                    onClick={() => {
-                      setShowStoreDetailsModal(false)
-                      setLinkForm({ ...linkForm, storeId: selectedStore.id })
-                      setShowAddLinkModal(true)
-                    }}
-                    className="text-xs font-semibold text-blue-600 hover:text-blue-700"
-                  >
-                    + Add Product
-                  </button>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => {
+                        setShowStoreDetailsModal(false)
+                        openBulkImport(selectedStore)
+                      }}
+                      className="text-xs font-semibold text-red-600 hover:text-red-700 flex items-center gap-1"
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                      </svg>
+                      Bulk Import
+                    </button>
+                    <button
+                      onClick={() => {
+                        setShowStoreDetailsModal(false)
+                        setLinkForm({ ...linkForm, storeId: selectedStore.id })
+                        setShowAddLinkModal(true)
+                      }}
+                      className="text-xs font-semibold text-red-600 hover:text-red-700"
+                    >
+                      + Add Product
+                    </button>
+                  </div>
                 </div>
                 
                 {selectedStore.links.length === 0 ? (
@@ -599,16 +830,28 @@ export default function StoresPage() {
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" />
                     </svg>
                     <p className="text-sm text-gray-500 mb-3">No products in this store yet</p>
-                    <button
-                      onClick={() => {
-                        setShowStoreDetailsModal(false)
-                        setLinkForm({ ...linkForm, storeId: selectedStore.id })
-                        setShowAddLinkModal(true)
-                      }}
-                      className="text-sm text-blue-600 hover:text-blue-700 font-medium"
-                    >
-                      Add first product
-                    </button>
+                    <div className="flex gap-2 justify-center">
+                      <button
+                        onClick={() => {
+                          setShowStoreDetailsModal(false)
+                          openBulkImport(selectedStore)
+                        }}
+                        className="text-sm text-red-600 hover:text-red-700 font-medium"
+                      >
+                        Bulk import products
+                      </button>
+                      <span className="text-gray-400">or</span>
+                      <button
+                        onClick={() => {
+                          setShowStoreDetailsModal(false)
+                          setLinkForm({ ...linkForm, storeId: selectedStore.id })
+                          setShowAddLinkModal(true)
+                        }}
+                        className="text-sm text-red-600 hover:text-red-700 font-medium"
+                      >
+                        Add one product
+                      </button>
+                    </div>
                   </div>
                 ) : (
                   <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
@@ -616,7 +859,7 @@ export default function StoresPage() {
                       <div 
                         key={link.id}
                         onClick={() => openProductDetails(link, selectedStore)}
-                        className="bg-gray-50 rounded-lg p-3 hover:bg-blue-50 hover:shadow-md transition-all cursor-pointer group border border-gray-200 hover:border-blue-300"
+                        className="bg-gray-50 rounded-lg p-3 hover:bg-red-50 hover:shadow-md transition-all cursor-pointer group border border-gray-200 hover:border-red-300"
                       >
                         <div className="aspect-square rounded-md overflow-hidden mb-2 bg-white">
                           <img 
@@ -680,7 +923,7 @@ export default function StoresPage() {
                     </h4>
                     <p className="text-sm text-gray-600 mb-3">{selectedProduct.product?.brand || 'Unknown Brand'}</p>
                     <div className="flex items-center gap-3 text-sm">
-                      <span className="px-2.5 py-1 bg-blue-100 text-blue-800 rounded-md font-medium text-xs">
+                      <span className="px-2.5 py-1 bg-red-100 text-red-800 rounded-md font-medium text-xs">
                         {selectedProduct.product?.stock_status || 'Unknown'}
                       </span>
                       {selectedProduct.product?.our_price && (
@@ -692,7 +935,6 @@ export default function StoresPage() {
                   </div>
                 </div>
 
-                {/* Affiliate Link */}
                 <div className="bg-green-50 border border-green-200 rounded-lg p-4 mb-4">
                   <h5 className="text-xs font-bold text-gray-700 uppercase tracking-wide mb-2">Affiliate Link</h5>
                   <code className="text-xs bg-white px-2 py-1.5 rounded block break-all border border-green-300 font-mono text-gray-900 mb-3">
@@ -775,7 +1017,7 @@ export default function StoresPage() {
                     value={linkForm.affiliateUrl}
                     onChange={(e) => setLinkForm({...linkForm, affiliateUrl: e.target.value})}
                     placeholder="https://amzn.to/3IyHUoa"
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent"
                     required
                   />
                 </div>
@@ -795,7 +1037,7 @@ export default function StoresPage() {
                         }}
                         onFocus={() => setShowProductDropdown(true)}
                         placeholder="Search products..."
-                        className="w-full px-3 py-2 pr-8 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                        className="w-full px-3 py-2 pr-8 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent"
                       />
                       <svg className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
@@ -831,7 +1073,7 @@ export default function StoresPage() {
                   </div>
                   
                   {linkForm.selectedProduct && (
-                    <div className="mt-3 flex items-center gap-3 p-3 bg-blue-50 rounded-lg border border-blue-200">
+                    <div className="mt-3 flex items-center gap-3 p-3 bg-red-50 rounded-lg border border-red-200">
                       <img 
                         src={linkForm.selectedProduct.image_urls?.[0] || 'https://via.placeholder.com/50'} 
                         alt={linkForm.selectedProduct.title}
@@ -848,7 +1090,7 @@ export default function StoresPage() {
                           setLinkForm({...linkForm, selectedProduct: null})
                           setProductSearchTerm('')
                         }}
-                        className="p-1.5 hover:bg-blue-100 rounded text-gray-500 hover:text-gray-700 flex-shrink-0"
+                        className="p-1.5 hover:bg-red-100 rounded text-gray-500 hover:text-gray-700 flex-shrink-0"
                       >
                         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -876,11 +1118,87 @@ export default function StoresPage() {
                 <button
                   type="button"
                   onClick={handleAddLink}
-                  className="flex-1 px-4 py-2 text-sm font-semibold text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors"
+                  className="flex-1 px-4 py-2 text-sm font-semibold text-white bg-red-600 rounded-lg hover:bg-red-700 transition-colors"
                 >
                   Add Affiliate Link
                 </button>
               </div>
+            </div>
+          </div>
+        )}
+
+        {/* Create Store Modal */}
+        {showStoreModal && (
+          <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+            <div className="bg-white rounded-xl shadow-2xl max-w-md w-full">
+              <div className="px-6 py-4 border-b border-gray-100">
+                <h3 className="text-lg font-bold text-gray-900">Create New Store</h3>
+              </div>
+              {newlyCreatedStore ? (
+                <div className="p-6">
+                  <div className="bg-green-50 border border-green-200 rounded-lg p-4 mb-4">
+                    <p className="text-sm font-semibold text-green-900 mb-2">Store created successfully!</p>
+                    <p className="text-xs text-green-700 mb-3">Save this API key - you can view it later in the store details.</p>
+                    <code className="text-xs bg-white px-3 py-2 rounded block break-all border border-green-300 font-mono text-green-900">
+                      {newlyCreatedStore.apiKey}
+                    </code>
+                    <button
+                      onClick={() => copyToClipboard(newlyCreatedStore.apiKey, 'API key copied')}
+                      className="mt-3 w-full px-4 py-2 text-sm font-semibold text-green-700 bg-green-100 rounded-lg hover:bg-green-200 transition-colors"
+                    >
+                      Copy API Key
+                    </button>
+                  </div>
+                  <button
+                    onClick={() => {
+                      setShowStoreModal(false)
+                      setNewlyCreatedStore(null)
+                      setStoreForm({ storeName: '' })
+                    }}
+                    className="w-full px-4 py-2 text-sm font-semibold text-white bg-red-600 rounded-lg hover:bg-red-700 transition-colors"
+                  >
+                    Done
+                  </button>
+                </div>
+              ) : (
+                <form onSubmit={handleCreateStore} className="p-6 space-y-4">
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">
+                      Store Name <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={storeForm.storeName}
+                      onChange={(e) => setStoreForm({...storeForm, storeName: e.target.value})}
+                      placeholder="e.g., Petacular"
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent"
+                      required
+                    />
+                    <p className="text-xs text-gray-500 mt-1.5">Choose a unique name for this store</p>
+                  </div>
+                  <div className="bg-red-50 border border-red-200 rounded-lg p-3">
+                    <p className="text-xs text-red-800">An API key will be automatically generated for this store</p>
+                  </div>
+                  <div className="flex gap-3 pt-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowStoreModal(false)
+                        setStoreForm({ storeName: '' })
+                      }}
+                      className="flex-1 px-4 py-2 text-sm font-semibold text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      className="flex-1 px-4 py-2 text-sm font-semibold text-white bg-red-600 rounded-lg hover:bg-red-700 transition-colors"
+                    >
+                      Create Store
+                    </button>
+                  </div>
+                </form>
+              )}
             </div>
           </div>
         )}
