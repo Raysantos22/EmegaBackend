@@ -28,7 +28,7 @@ export default function DashboardHome() {
   if (loading) {
     return (
       <DashboardLayout session={session} supabase={supabase} currentPage="dashboard">
-        <div>Loading...</div>
+        {/* <div>Loading...</div> */}
       </DashboardLayout>
     )
   }
@@ -36,15 +36,15 @@ export default function DashboardHome() {
   return (
     <DashboardLayout session={session} supabase={supabase} currentPage="dashboard">
       <div>
-        <h1>Dashboard</h1>
-        <p>Welcome back, {session?.user?.email}</p>
+        {/* <h1>Dashboard</h1>
+        <p>Welcome back, {session?.user?.email}</p> */}
         
         <nav>
-          <Link href="/banners">Banners</Link>
+          {/* <Link href="/banners">Banners</Link>
           <br />
           <Link href="/products">Products</Link>
           <br />
-          <Link href="/notifications">Notifications</Link>
+          <Link href="/notifications">Notifications</Link> */}
         </nav>
       </div>
     </DashboardLayout>
