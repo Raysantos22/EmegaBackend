@@ -12,11 +12,18 @@ export default function AmazonProductsPage() {
   const abortControllers = useRef(new Map())
   const [notifications, setNotifications] = useState([])
   
+
+  const [persistedStatus, setPersistedStatus] = useState({
+    csvImport: null,
+    update: null
+  })
+
   // Import states
   const [importInput, setImportInput] = useState('')
   const [importStatus, setImportStatus] = useState('idle')
   const [activeTab, setActiveTab] = useState('single')
   
+ 
   // CSV Import states
   const [csvFile, setCsvFile] = useState(null)
   const [csvImportStatus, setCsvImportStatus] = useState('idle')
@@ -71,6 +78,23 @@ export default function AmazonProductsPage() {
   
   const router = useRouter()
 
+  const saveStatus = (type, data) => {
+    setPersistedStatus(prev => ({
+      ...prev,
+      [type]: data ? {
+        ...data,
+        savedAt: Date.now()
+      } : null
+    }))
+  }
+
+  // Clear status from memory
+  const clearStatus = (type) => {
+    setPersistedStatus(prev => ({
+      ...prev,
+      [type]: null
+    }))
+  }
   const checkUser = useCallback(async () => {
     const { data: { session } } = await supabase.auth.getSession()
     if (!session) {
@@ -84,15 +108,33 @@ export default function AmazonProductsPage() {
     setLoading(false)
   }, [router])
 
+  // ✅ REPLACE YOUR EXISTING FIRST useEffect WITH THIS
   useEffect(() => {
+    // Restore persisted statuses on mount
+    if (persistedStatus.csvImport && persistedStatus.csvImport.status === 'processing') {
+      setCsvImportStatus(persistedStatus.csvImport.status)
+      setCsvImportProgress(persistedStatus.csvImport.progress)
+      setCurrentCsvSession(persistedStatus.csvImport.sessionId)
+    }
+    
+    if (persistedStatus.update && persistedStatus.update.status === 'processing') {
+      setUpdateSessionId(persistedStatus.update.sessionId)
+      setUpdateProgress(persistedStatus.update.progress)
+    }
+
     checkUser()
+    
     const interval = setInterval(() => {
       if (session?.user?.id) {
-        checkCsvImportStatus(session.user.id)
+        // Only poll if there are active operations
+        if (currentCsvSession || updateSessionId) {
+          checkCsvImportStatus(session.user.id)
+        }
       }
-    }, 10000)
+    }, 3000) // Changed to 3 seconds for faster updates
+    
     return () => clearInterval(interval)
-  }, [checkUser, session?.user?.id])
+  }, [checkUser, session?.user?.id, currentCsvSession, updateSessionId]) // ✅ Added dependencies
 
   const loadProducts = async (userId) => {
     try {
@@ -147,34 +189,54 @@ export default function AmazonProductsPage() {
     }
   }
 
+ // ✅ REPLACE YOUR EXISTING checkCsvImportStatus FUNCTION
   const checkCsvImportStatus = async (userId) => {
     try {
-      const response = await fetch(`/api/amazon/csv-import-status?userId=${userId}${currentCsvSession ? `&sessionId=${currentCsvSession}` : ''}`)
+      const sessionParam = currentCsvSession ? `&sessionId=${currentCsvSession}` : ''
+      const response = await fetch(`/api/amazon/csv-import-status?userId=${userId}${sessionParam}`)
       const data = await response.json()
+      
       if (data.success && data.session) {
         const previousStatus = csvImportStatus
+        const newStatus = data.session.status === 'running' ? 'processing' : data.session.status
         
-        const uiStatus = data.session.status === 'running' ? 'processing' : data.session.status
-        setCsvImportStatus(uiStatus)
+        // Update states
+        setCsvImportStatus(newStatus)
         setCsvImportProgress(data.progress)
         
-        if (!currentCsvSession && data.session.id && uiStatus === 'processing') {
+        // Set session ID if not set
+        if (!currentCsvSession && data.session.id && newStatus === 'processing') {
           console.log('[STATUS] Setting current session:', data.session.id)
           setCurrentCsvSession(data.session.id)
         }
         
+        // ✅ SAVE TO PERSISTENT STORAGE
+        if (newStatus === 'processing') {
+          saveStatus('csvImport', {
+            sessionId: data.session.id,
+            status: newStatus,
+            progress: data.progress
+          })
+        }
+        
+        // Fetch logs
         if (currentCsvSession || data.session.id) {
           fetchImportLogs(currentCsvSession || data.session.id)
         }
         
-        if ((uiStatus === 'completed' || uiStatus === 'failed') && previousStatus === 'processing') {
+        // Handle completion
+        if ((newStatus === 'completed' || newStatus === 'failed') && previousStatus === 'processing') {
           await loadProducts(userId)
-          if (uiStatus === 'completed') {
+          if (newStatus === 'completed') {
             addNotification(`CSV import completed! Imported: ${data.progress.imported}, Updated: ${data.progress.updated}`, 'success')
           }
+          
+          // ✅ KEEP STATUS VISIBLE FOR 60 SECONDS
           setTimeout(() => {
+            setCsvImportStatus('idle')
             setCurrentCsvSession(null)
-          }, 5000)
+            clearStatus('csvImport')
+          }, 60000)
         }
       }
     } catch (error) {
@@ -253,6 +315,21 @@ export default function AmazonProductsPage() {
       const data = await response.json()
       if (response.ok && data.success) {
         setCurrentCsvSession(data.sessionId)
+        
+        // ✅ SAVE TO PERSISTENT STORAGE IMMEDIATELY
+        saveStatus('csvImport', {
+          sessionId: data.sessionId,
+          status: 'processing',
+          progress: {
+            processed: 0,
+            imported: 0,
+            updated: 0,
+            failed: 0,
+            total: data.totalSkus,
+            percentage: 0
+          }
+        })
+        
         addNotification(`CSV import started for ${data.totalSkus} SKUs`, 'info')
         setCsvFile(null)
         const fileInput = document.getElementById('csv-file-input')
@@ -304,11 +381,15 @@ export default function AmazonProductsPage() {
       if (response.ok && data.success) {
         addNotification('Import cancelled successfully', 'success')
         setCsvImportStatus('cancelled')
+        
+        // ✅ KEEP CANCELLED STATUS VISIBLE FOR 60 SECONDS
         setTimeout(async () => {
           await loadProducts(session.user.id)
           setShowImportModal(false)
           setCurrentCsvSession(null)
-        }, 1000)
+          setCsvImportStatus('idle')
+          clearStatus('csvImport')
+        }, 60000)
       } else {
         throw new Error(data.message || data.error || 'Cancel failed')
       }
@@ -694,154 +775,191 @@ useEffect(() => {
   }
 
   return (
-    <DashboardLayout session={session} supabase={supabase} currentPage="amazon-products">
-      <div className="h-full bg-gray-50">
-        {/* Toast Notifications */}
-        {notifications.length > 0 && (
-          <div className="fixed top-4 right-4 z-50 space-y-2">
-            {notifications.map((notification) => (
-              <div key={notification.id} className={`p-3 rounded-lg shadow-lg border backdrop-blur-sm ${
-                notification.type === 'success' ? 'bg-green-50/95 border-green-200 text-green-800' :
-                notification.type === 'error' ? 'bg-red-50/95 border-red-200 text-red-800' :
-                'bg-blue-50/95 border-blue-200 text-blue-800'
-              }`}>
-                <p className="text-sm font-medium">{notification.message}</p>
+  <DashboardLayout session={session} supabase={supabase} currentPage="amazon-products">
+    <div className="h-full bg-gray-50">
+      {/* Toast Notifications */}
+      {notifications.length > 0 && (
+        <div className="fixed top-4 right-4 z-50 space-y-2">
+          {notifications.map((notification) => (
+            <div key={notification.id} className={`p-3 rounded-lg shadow-lg border backdrop-blur-sm ${
+              notification.type === 'success' ? 'bg-green-50/95 border-green-200 text-green-800' :
+              notification.type === 'error' ? 'bg-red-50/95 border-red-200 text-red-800' :
+              'bg-blue-50/95 border-blue-200 text-blue-800'
+            }`}>
+              <p className="text-sm font-medium">{notification.message}</p>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Compact Status Bar - Shows for active AND recently completed operations */}
+      {((csvImportStatus && ['processing', 'uploading', 'running', 'completed', 'cancelled'].includes(csvImportStatus)) || 
+        (updateSessionId && updateProgress.total > 0)) && (
+        <div className={`fixed top-0 left-0 right-0 z-40 shadow-lg ${
+          csvImportStatus === 'completed' || (updateProgress.completed && updateSessionId) 
+            ? 'bg-gradient-to-r from-green-600 to-emerald-600'
+            : csvImportStatus === 'cancelled'
+            ? 'bg-gradient-to-r from-gray-600 to-gray-700'
+            : 'bg-gradient-to-r from-blue-600 to-indigo-600'
+        }`}>
+          <div className="max-w-7xl mx-auto px-6 py-2">
+            <div className="flex items-center justify-between gap-4">
+              {/* Left Side: Status Information */}
+              <div className="flex items-center gap-6">
+                {/* CSV Import Status */}
+                {csvImportStatus === 'processing' && (
+                  <div className="flex items-center gap-3">
+                    <div className="relative">
+                      <div className="w-2 h-2 bg-white rounded-full animate-pulse"></div>
+                      <div className="absolute inset-0 w-2 h-2 bg-white rounded-full animate-ping opacity-75"></div>
+                    </div>
+                    <div className="text-white">
+                      <span className="text-sm font-semibold">CSV Import</span>
+                      <span className="text-xs ml-2 opacity-90">
+                        {csvImportProgress.processed}/{csvImportProgress.total} ({csvImportProgress.percentage}%)
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2 text-xs text-white/80">
+                      <span>✓ {csvImportProgress.imported}</span>
+                      <span>↻ {csvImportProgress.updated}</span>
+                      <span>✕ {csvImportProgress.failed}</span>
+                    </div>
+                  </div>
+                )}
+
+                {/* CSV Import Completed */}
+                {csvImportStatus === 'completed' && (
+                  <div className="flex items-center gap-3">
+                    <svg className="w-5 h-5 text-white" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                    </svg>
+                    <div className="text-white">
+                      <span className="text-sm font-semibold">CSV Import Complete!</span>
+                      <span className="text-xs ml-2 opacity-90">
+                        Imported: {csvImportProgress.imported} • Updated: {csvImportProgress.updated}
+                      </span>
+                    </div>
+                  </div>
+                )}
+
+                {/* CSV Import Cancelled */}
+                {csvImportStatus === 'cancelled' && (
+                  <div className="flex items-center gap-3">
+                    <svg className="w-5 h-5 text-white" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                    </svg>
+                    <div className="text-white">
+                      <span className="text-sm font-semibold">CSV Import Cancelled</span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Update Status */}
+                {updateSessionId && updateProgress.total > 0 && !updateProgress.completed && csvImportStatus !== 'processing' && (
+                  <div className="flex items-center gap-3">
+                    <div className="relative">
+                      <div className="w-2 h-2 bg-green-300 rounded-full animate-pulse"></div>
+                      <div className="absolute inset-0 w-2 h-2 bg-green-300 rounded-full animate-ping opacity-75"></div>
+                    </div>
+                    <div className="text-white">
+                      <span className="text-sm font-semibold">Update</span>
+                      <span className="text-xs ml-2 opacity-90">
+                        {updateProgress.processed}/{updateProgress.total} ({updateProgress.percentage}%)
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2 text-xs text-white/80">
+                      <span>✓ {updateProgress.updated}</span>
+                      <span>✕ {updateProgress.failed}</span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Update Completed */}
+                {updateProgress.completed && updateSessionId && csvImportStatus !== 'processing' && csvImportStatus !== 'completed' && (
+                  <div className="flex items-center gap-3">
+                    <svg className="w-5 h-5 text-white" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                    </svg>
+                    <div className="text-white">
+                      <span className="text-sm font-semibold">Update Complete!</span>
+                      <span className="text-xs ml-2 opacity-90">
+                        Updated: {updateProgress.updated} • Failed: {updateProgress.failed}
+                      </span>
+                    </div>
+                  </div>
+                )}
               </div>
-            ))}
-          </div>
-        )}
 
-        {/* Compact Status Bar */}
-        {(csvImportStatus === 'processing' || (updateSessionId && updateProgress.total > 0 && !updateProgress.completed)) && (
-          <div className="fixed top-0 left-0 right-0 z-40 bg-gradient-to-r from-blue-600 to-indigo-600 shadow-lg">
-            <div className="max-w-7xl mx-auto px-6 py-2">
-              <div className="flex items-center justify-between gap-4">
-                <div className="flex items-center gap-6">
-                  {csvImportStatus === 'processing' && (
-                    <div className="flex items-center gap-3">
-                      <div className="relative">
-                        <div className="w-2 h-2 bg-white rounded-full animate-pulse"></div>
-                        <div className="absolute inset-0 w-2 h-2 bg-white rounded-full animate-ping opacity-75"></div>
-                      </div>
-                      <div className="text-white">
-                        <span className="text-sm font-semibold">CSV Import</span>
-                        <span className="text-xs ml-2 opacity-90">
-                          {csvImportProgress.processed}/{csvImportProgress.total} ({csvImportProgress.percentage}%)
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-2 text-xs text-white/80">
-                        <span>✓ {csvImportProgress.imported}</span>
-                        <span>↻ {csvImportProgress.updated}</span>
-                        <span>✕ {csvImportProgress.failed}</span>
-                      </div>
-                    </div>
-                  )}
-
-                  {updateSessionId && updateProgress.total > 0 && !updateProgress.completed && (
-                    <div className="flex items-center gap-3">
-                      <div className="relative">
-                        <div className="w-2 h-2 bg-green-300 rounded-full animate-pulse"></div>
-                        <div className="absolute inset-0 w-2 h-2 bg-green-300 rounded-full animate-ping opacity-75"></div>
-                      </div>
-                      <div className="text-white">
-                        <span className="text-sm font-semibold">Update</span>
-                        <span className="text-xs ml-2 opacity-90">
-                          {updateProgress.processed}/{updateProgress.total} ({updateProgress.percentage}%)
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-2 text-xs text-white/80">
-                        <span>✓ {updateProgress.updated}</span>
-                        <span>✕ {updateProgress.failed}</span>
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                <div className="flex items-center gap-2">
+              {/* Right Side: Action Buttons */}
+              <div className="flex items-center gap-2">
+                {/* Details Button for Active Operations */}
+                {(csvImportStatus === 'processing' || (updateSessionId && !updateProgress.completed)) && (
                   <button
                     onClick={() => {
                       if (csvImportStatus === 'processing') setShowImportModal(true)
-                      if (updateSessionId) setShowUpdateModal(true)
+                      if (updateSessionId && !updateProgress.completed) setShowUpdateModal(true)
                     }}
                     className="px-3 py-1 text-xs font-medium text-white bg-white/20 hover:bg-white/30 rounded transition-colors"
                   >
                     Details
                   </button>
-                  {csvImportStatus === 'processing' && (
-                    <button
-                      onClick={handleCancelImport}
-                      className="px-3 py-1 text-xs font-medium text-white bg-red-500/90 hover:bg-red-600 rounded transition-colors"
-                    >
-                      Cancel
-                    </button>
-                  )}
-                  {updateSessionId && !updateProgress.completed && (
-                    <button
-                      onClick={handleCancelUpdate}
-                      className="px-3 py-1 text-xs font-medium text-white bg-red-500/90 hover:bg-red-600 rounded transition-colors"
-                    >
-                      Cancel
-                    </button>
-                  )}
-                </div>
+                )}
+
+                {/* Cancel Button for CSV Import */}
+                {csvImportStatus === 'processing' && (
+                  <button
+                    onClick={handleCancelImport}
+                    className="px-3 py-1 text-xs font-medium text-white bg-red-500/90 hover:bg-red-600 rounded transition-colors"
+                  >
+                    Cancel
+                  </button>
+                )}
+
+                {/* Cancel Button for Update */}
+                {updateSessionId && !updateProgress.completed && csvImportStatus !== 'processing' && (
+                  <button
+                    onClick={handleCancelUpdate}
+                    className="px-3 py-1 text-xs font-medium text-white bg-red-500/90 hover:bg-red-600 rounded transition-colors"
+                  >
+                    Cancel
+                  </button>
+                )}
+
+                {/* Dismiss Button for Completed CSV Import */}
+                {(csvImportStatus === 'completed' || csvImportStatus === 'cancelled') && (
+                  <button
+                    onClick={() => {
+                      setCsvImportStatus('idle')
+                      setCurrentCsvSession(null)
+                      clearStatus('csvImport')
+                    }}
+                    className="px-3 py-1 text-xs font-medium text-white hover:bg-white/20 rounded transition-colors"
+                  >
+                    Dismiss
+                  </button>
+                )}
+
+                {/* Dismiss Button for Completed Update */}
+                {updateProgress.completed && updateSessionId && csvImportStatus !== 'completed' && csvImportStatus !== 'cancelled' && (
+                  <button
+                    onClick={() => {
+                      setUpdateProgress({ processed: 0, updated: 0, failed: 0, total: 0, percentage: 0, completed: false })
+                      setUpdateSessionId(null)
+                      clearStatus('update')
+                    }}
+                    className="px-3 py-1 text-xs font-medium text-white hover:bg-white/20 rounded transition-colors"
+                  >
+                    Dismiss
+                  </button>
+                )}
               </div>
             </div>
           </div>
-        )}
-
-        {/* Completion Toasts */}
-        {(csvImportStatus === 'completed' || updateProgress.completed) && (
-          <div className="fixed top-4 right-4 z-50 space-y-2">
-            {csvImportStatus === 'completed' && (
-              <div className="bg-green-500 text-white px-4 py-3 rounded-lg shadow-lg flex items-center gap-3">
-                <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
-                  <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
-                </svg>
-                <div>
-                  <div className="font-semibold text-sm">CSV Import Complete!</div>
-                  <div className="text-xs opacity-90">
-                    Imported: {csvImportProgress.imported} • Updated: {csvImportProgress.updated}
-                  </div>
-                </div>
-                <button
-                  onClick={() => {
-                    setCsvImportStatus('idle')
-                    setCsvImportProgress({ processed: 0, imported: 0, updated: 0, failed: 0, total: 0, percentage: 0 })
-                    setCurrentCsvSession(null)
-                  }}
-                  className="ml-2 text-white hover:text-gray-200"
-                >
-                  ✕
-                </button>
-              </div>
-            )}
-            {updateProgress.completed && (
-              <div className="bg-green-500 text-white px-4 py-3 rounded-lg shadow-lg flex items-center gap-3">
-                <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
-                  <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
-                </svg>
-                <div>
-                  <div className="font-semibold text-sm">Update Complete!</div>
-                  <div className="text-xs opacity-90">
-                    Updated: {updateProgress.updated} • Failed: {updateProgress.failed}
-                  </div>
-                </div>
-                <button
-                  onClick={() => {
-                    setUpdateProgress({ processed: 0, updated: 0, failed: 0, total: 0, percentage: 0, completed: false })
-                    setUpdateSessionId(null)
-                  }}
-                  className="ml-2 text-white hover:text-gray-200"
-                >
-                  ✕
-                </button>
-              </div>
-            )}
-          </div>
-        )}
+        </div>
+      )}
 
         {/* Add padding when status bar is visible */}
-        <div className={`${(csvImportStatus === 'processing' || (updateSessionId && !updateProgress.completed)) ? 'pt-12' : ''}`}></div>
+      <div className={`${((csvImportStatus && ['processing', 'uploading', 'running', 'completed', 'cancelled'].includes(csvImportStatus)) || (updateSessionId && updateProgress.total > 0)) ? 'pt-12' : ''}`}></div>
 
         <div className="bg-white">
           {/* Header */}
