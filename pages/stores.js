@@ -1,4 +1,4 @@
-// pages/stores.js - Complete version with Bulk Import
+// pages/stores.js - Complete version with Bulk Import and Store Product Search
 import { useState, useEffect, useCallback } from 'react'
 import { useRouter } from 'next/router'
 import { supabase } from '../lib/supabase'
@@ -84,6 +84,7 @@ export default function StoresPage() {
   const [searchTerm, setSearchTerm] = useState('')
   const [productSearchTerm, setProductSearchTerm] = useState('')
   const [showProductDropdown, setShowProductDropdown] = useState(false)
+  const [storeProductSearchTerm, setStoreProductSearchTerm] = useState('')
   const router = useRouter()
 
   const checkUser = useCallback(async () => {
@@ -375,8 +376,17 @@ export default function StoresPage() {
            product.internal_sku?.toLowerCase().includes(productSearchTerm.toLowerCase())
   })
 
+  const filteredStoreProducts = selectedStore?.links.filter(link => {
+    if (!storeProductSearchTerm) return true
+    const searchLower = storeProductSearchTerm.toLowerCase()
+    return link.product?.title?.toLowerCase().includes(searchLower) ||
+           link.product?.brand?.toLowerCase().includes(searchLower) ||
+           link.product?.internal_sku?.toLowerCase().includes(searchLower)
+  }) || []
+
   const openStoreDetails = (store) => {
     setSelectedStore(store)
+    setStoreProductSearchTerm('')
     setShowStoreDetailsModal(true)
   }
 
@@ -751,7 +761,7 @@ export default function StoresPage() {
           </div>
         )}
 
-        {/* Store Details Modal - continues below */}
+        {/* Store Details Modal */}
         {showStoreDetailsModal && selectedStore && (
           <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
             <div className="bg-white rounded-xl shadow-2xl max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col">
@@ -769,7 +779,10 @@ export default function StoresPage() {
                     </div>
                   </div>
                   <button
-                    onClick={() => setShowStoreDetailsModal(false)}
+                    onClick={() => {
+                      setShowStoreDetailsModal(false)
+                      setStoreProductSearchTerm('')
+                    }}
                     className="p-2 rounded-lg hover:bg-white/20 text-white transition-colors flex-shrink-0"
                   >
                     <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -823,6 +836,22 @@ export default function StoresPage() {
                     </button>
                   </div>
                 </div>
+
+                {/* Search bar for store products */}
+                {selectedStore.links.length > 0 && (
+                  <div className="relative mb-4">
+                    <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                    </svg>
+                    <input
+                      type="text"
+                      placeholder="Search products by name, brand, or SKU..."
+                      value={storeProductSearchTerm}
+                      onChange={(e) => setStoreProductSearchTerm(e.target.value)}
+                      className="w-full pl-10 pr-4 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent"
+                    />
+                  </div>
+                )}
                 
                 {selectedStore.links.length === 0 ? (
                   <div className="text-center py-12 bg-gray-50 rounded-lg border border-gray-200">
@@ -853,9 +882,22 @@ export default function StoresPage() {
                       </button>
                     </div>
                   </div>
+                ) : filteredStoreProducts.length === 0 ? (
+                  <div className="text-center py-12 bg-gray-50 rounded-lg border border-gray-200">
+                    <svg className="w-12 h-12 text-gray-300 mx-auto mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                    </svg>
+                    <p className="text-sm text-gray-500 mb-2">No products match your search</p>
+                    <button
+                      onClick={() => setStoreProductSearchTerm('')}
+                      className="text-sm text-red-600 hover:text-red-700 font-medium"
+                    >
+                      Clear search
+                    </button>
+                  </div>
                 ) : (
                   <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
-                    {selectedStore.links.map((link) => (
+                    {filteredStoreProducts.map((link) => (
                       <div 
                         key={link.id}
                         onClick={() => openProductDetails(link, selectedStore)}
@@ -873,6 +915,7 @@ export default function StoresPage() {
                           {link.product?.title || 'Product not found'}
                         </p>
                         <p className="text-xs text-gray-500">{link.product?.brand || 'Unknown'}</p>
+                        <p className="text-xs text-gray-400 mt-1">{link.product?.internal_sku}</p>
                       </div>
                     ))}
                   </div>
@@ -881,7 +924,10 @@ export default function StoresPage() {
 
               <div className="px-6 py-4 border-t border-gray-100 bg-gray-50">
                 <button
-                  onClick={() => setShowStoreDetailsModal(false)}
+                  onClick={() => {
+                    setShowStoreDetailsModal(false)
+                    setStoreProductSearchTerm('')
+                  }}
                   className="w-full px-4 py-2 text-sm font-semibold text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
                 >
                   Close
