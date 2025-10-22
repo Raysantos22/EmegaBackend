@@ -32,6 +32,16 @@ export default function ModernDashboardLayout({ children, session, supabase, cur
       ),
       current: currentPage === 'stores' 
     },
+    { 
+      name: 'Emega Database', 
+      href: '/emega-database', 
+      icon: (
+        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4" />
+        </svg>
+      ),
+      current: currentPage === 'emega-database' 
+    },
   ]
 
   return (
@@ -109,18 +119,10 @@ export default function ModernDashboardLayout({ children, session, supabase, cur
         <div className="relative p-4 border-t border-gray-100 space-y-3">
           {/* User Info Card */}
           {!isSidebarCollapsed && (
-            // <div className="bg-gradient-to-br from-red-50 to-orange-50 backdrop-blur-sm rounded-xl p-4 border border-red-100 transform hover:scale-105 transition-all duration-300 shadow-sm">
-              <div className="flex items-center space-x-3">
-                {/* <div className="w-10 h-10 bg-gradient-to-br from-red-500 to-orange-600 rounded-lg flex items-center justify-center text-white font-medium shadow-lg shadow-red-500/30">
-                  {session?.user?.email?.charAt(0).toUpperCase() || 'A'}
-                </div> */}
-                <div className="flex-1 min-w-0">
-                  {/* <p className="text-sm font-medium text-gray-900 truncate">
-                    {session?.user?.email?.split('@')[0] || 'Admin'}
-                  </p> */}
-                  {/* <p className="text-xs text-gray-600">Administrator</p> */}
-                </div>
-              {/* </div> */}
+            <div className="flex items-center space-x-3">
+              <div className="flex-1 min-w-0">
+                {/* User info commented out as in original */}
+              </div>
             </div>
           )}
           
@@ -165,11 +167,11 @@ export default function ModernDashboardLayout({ children, session, supabase, cur
               {/* Page Title */}
               <div>
                 <h2 className="text-2xl font-bold text-gray-900 capitalize">
-                  {currentPage === 'amazon-products' ? 'Amazon Products' : currentPage}
+                  {currentPage === 'amazon-products' ? 'Amazon Products' : 
+                   currentPage === 'emega-database' ? 'Emega Database Viewer' : currentPage}
                 </h2>
                 <p className="text-sm text-gray-500 mt-1">
-                  {/* {currentPage === 'amazon-products' && 'Manage your Amazon product catalog'} */}
-                  {/* {currentPage === 'stores' && 'Connect and manage your stores'} */}
+                  {currentPage === 'emega-database' && 'View and manage your Emega database tables'}
                 </p>
               </div>
 
@@ -221,11 +223,8 @@ export default function ModernDashboardLayout({ children, session, supabase, cur
         {/* Footer */}
         <footer className="bg-white border-t border-gray-100 px-6 py-4">
           <div className="flex justify-between items-center text-sm text-gray-500">
-            {/* <p>&copy; 2024 Mega Shop Australia. All rights reserved.</p> */}
             <div className="flex items-center space-x-4">
-              {/* <span>Version 1.0.0</span> */}
               <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
-              {/* <span>Last updated: {new Date().toLocaleDateString()}</span> */}
             </div>
           </div>
         </footer>
