@@ -11,7 +11,13 @@ export default function AmazonProductsPage() {
   const [products, setProducts] = useState([])
   const abortControllers = useRef(new Map())
   const [notifications, setNotifications] = useState([])
-  
+const [expandedLog, setExpandedLog] = useState(null)
+const [hasCompletedReload, setHasCompletedReload] = useState(false)
+const [completedSessions, setCompletedSessions] = useState(new Set())
+const [showImportHistory, setShowImportHistory] = useState(false)
+const [importHistory, setImportHistory] = useState([])
+const [loadingHistory, setLoadingHistory] = useState(false)
+const [selectedHistorySession, setSelectedHistorySession] = useState(null)
 
   const [persistedStatus, setPersistedStatus] = useState({
     csvImport: null,
@@ -190,59 +196,108 @@ export default function AmazonProductsPage() {
   }
 
  // ✅ REPLACE YOUR EXISTING checkCsvImportStatus FUNCTION
-  const checkCsvImportStatus = async (userId) => {
-    try {
-      const sessionParam = currentCsvSession ? `&sessionId=${currentCsvSession}` : ''
-      const response = await fetch(`/api/amazon/csv-import-status?userId=${userId}${sessionParam}`)
-      const data = await response.json()
+  // Add these debug console.logs to your checkCsvImportStatus function:
+
+const checkCsvImportStatus = async (userId) => {
+  try {
+    const sessionParam = currentCsvSession ? `&sessionId=${currentCsvSession}` : ''
+    const response = await fetch(`/api/amazon/csv-import-status?userId=${userId}${sessionParam}`)
+    const data = await response.json()
+    
+    if (data.success && data.session) {
+      const previousStatus = csvImportStatus
+      const newStatus = data.session.status === 'running' ? 'processing' : data.session.status
       
-      if (data.success && data.session) {
-        const previousStatus = csvImportStatus
-        const newStatus = data.session.status === 'running' ? 'processing' : data.session.status
+      setCsvImportStatus(newStatus)
+      setCsvImportProgress(data.progress)
+      
+      if (data.importDetails && Array.isArray(data.importDetails)) {
+        setCsvImportDetails(data.importDetails)
+      }
+      
+      if (!currentCsvSession && data.session.id && newStatus === 'processing') {
+        setCurrentCsvSession(data.session.id)
+      }
+      
+      if (newStatus === 'processing') {
+        saveStatus('csvImport', {
+          sessionId: data.session.id,
+          status: newStatus,
+          progress: data.progress
+        })
+      }
+      
+      // ✅ Handle completion - ONLY RELOAD ONCE per session
+      if ((newStatus === 'completed' || newStatus === 'failed') && previousStatus === 'processing') {
+        const sessionKey = `${data.session.id}`
         
-        // Update states
-        setCsvImportStatus(newStatus)
-        setCsvImportProgress(data.progress)
-        
-        // Set session ID if not set
-        if (!currentCsvSession && data.session.id && newStatus === 'processing') {
-          console.log('[STATUS] Setting current session:', data.session.id)
-          setCurrentCsvSession(data.session.id)
-        }
-        
-        // ✅ SAVE TO PERSISTENT STORAGE
-        if (newStatus === 'processing') {
-          saveStatus('csvImport', {
-            sessionId: data.session.id,
-            status: newStatus,
-            progress: data.progress
-          })
-        }
-        
-        // Fetch logs
-        if (currentCsvSession || data.session.id) {
-          fetchImportLogs(currentCsvSession || data.session.id)
-        }
-        
-        // Handle completion
-        if ((newStatus === 'completed' || newStatus === 'failed') && previousStatus === 'processing') {
+        if (!completedSessions.has(sessionKey)) {
+          console.log('[COMPLETION] Reloading products once for session:', sessionKey)
+          setCompletedSessions(prev => new Set(prev).add(sessionKey))
           await loadProducts(userId)
+          
           if (newStatus === 'completed') {
-            addNotification(`CSV import completed! Imported: ${data.progress.imported}, Updated: ${data.progress.updated}`, 'success')
+            addNotification(`CSV import completed! Imported: ${data.progress.imported}, Skipped: ${data.progress.updated}`, 'success')
           }
           
-          // ✅ KEEP STATUS VISIBLE FOR 60 SECONDS
+          // Auto-dismiss after 10 seconds
           setTimeout(() => {
             setCsvImportStatus('idle')
             setCurrentCsvSession(null)
             clearStatus('csvImport')
-          }, 60000)
+          }, 10000)
         }
       }
-    } catch (error) {
-      console.error('Error checking CSV import status:', error)
     }
+  } catch (error) {
+    console.error('[FRONTEND] Error checking CSV import status:', error)
   }
+}
+
+// Also add debug to your modal render - check if logs are present:
+// Add this right before your log mapping in the modal:
+{console.log('[MODAL RENDER] csvImportDetails:', csvImportDetails.length, 'items')}
+{console.log('[MODAL RENDER] First 3 logs:', csvImportDetails.slice(0, 3))}
+const loadImportHistory = async () => {
+  if (!session?.user?.id) return
+  
+  setLoadingHistory(true)
+  try {
+    const { data, error } = await supabase
+      .from('csv_import_sessions')
+      .select('*')
+      .eq('user_id', session.user.id)
+      .order('started_at', { ascending: false })
+      .limit(50)
+    
+    if (error) throw error
+    setImportHistory(data || [])
+  } catch (error) {
+    console.error('Error loading import history:', error)
+    addNotification('Failed to load import history', 'error')
+  } finally {
+    setLoadingHistory(false)
+  }
+}
+
+// 3. Add this function to view details of a specific session
+const viewSessionDetails = async (sessionId) => {
+  try {
+    const response = await fetch(`/api/amazon/csv-import-status?userId=${session.user.id}&sessionId=${sessionId}`)
+    const data = await response.json()
+    
+    if (data.success) {
+      setSelectedHistorySession({
+        ...data.session,
+        progress: data.progress,
+        logs: data.importDetails
+      })
+    }
+  } catch (error) {
+    console.error('Error loading session details:', error)
+    addNotification('Failed to load session details', 'error')
+  }
+}
 
   const fetchImportLogs = async (sessionId) => {
     try {
@@ -985,6 +1040,15 @@ useEffect(() => {
                   Import
                 </button>
                 <button 
+                onClick={() => {
+                  setShowImportHistory(true)
+                  loadImportHistory()
+                }}
+                className="px-4 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded hover:bg-gray-50"
+              >
+                Import History
+              </button>
+                <button 
                   onClick={triggerUpdate} 
                   disabled={updateStatus?.status === 'running'}
                   className="px-4 py-1.5 text-sm font-medium text-white bg-blue-600 rounded hover:bg-blue-700 disabled:opacity-50"
@@ -998,6 +1062,7 @@ useEffect(() => {
                   >
                     Delete All
                   </button>
+                  
                 )}
               </div>
             </div>
@@ -1857,166 +1922,602 @@ useEffect(() => {
     </div>
   </div>
 )}
-        {/* Import Details Modal */}
-        {showImportModal && (
-          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-            <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full max-h-[90vh] overflow-hidden">
-              <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+{showImportHistory && (
+  <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+    <div className="bg-white rounded-xl shadow-2xl max-w-6xl w-full max-h-[90vh] overflow-hidden">
+      {/* Header */}
+      <div className="px-6 py-4 border-b border-gray-200 bg-gradient-to-r from-indigo-600 to-purple-600">
+        <div className="flex items-center justify-between">
+          <div className="text-white">
+            <h3 className="text-lg font-bold">Import History</h3>
+            <p className="text-sm text-indigo-100 mt-0.5">View all your CSV import sessions</p>
+          </div>
+          <button
+            onClick={() => {
+              setShowImportHistory(false)
+              setSelectedHistorySession(null)
+            }}
+            className="text-white/80 hover:text-white transition-colors"
+          >
+            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      {/* Content */}
+      <div className="p-6 overflow-y-auto max-h-[calc(90vh-140px)]">
+        {loadingHistory ? (
+          <div className="flex items-center justify-center py-20">
+            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600"></div>
+          </div>
+        ) : selectedHistorySession ? (
+          // Session Details View
+          <div>
+            <button
+              onClick={() => setSelectedHistorySession(null)}
+              className="mb-4 px-3 py-1.5 text-sm text-indigo-600 hover:text-indigo-700 font-medium flex items-center gap-2"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
+              </svg>
+              Back to History
+            </button>
+
+            {/* Session Details */}
+            <div className="bg-gradient-to-br from-blue-50 to-indigo-50 rounded-lg p-6 mb-6 border border-indigo-100">
+              <div className="flex items-center justify-between mb-4">
                 <div>
-                  <h3 className="text-lg font-semibold text-gray-900">Import Progress</h3>
-                  <p className="text-sm text-gray-500 mt-0.5">
-                    Session #{currentCsvSession?.toString().slice(-8)}
+                  <h4 className="text-xl font-bold text-gray-900">
+                    Session #{selectedHistorySession.id?.toString().slice(-8)}
+                  </h4>
+                  <p className="text-sm text-gray-600 mt-1">
+                    {new Date(selectedHistorySession.started_at).toLocaleString()}
                   </p>
                 </div>
-                <button 
-                  onClick={() => setShowImportModal(false)}
-                  className="text-gray-400 hover:text-gray-600 transition-colors"
-                >
-                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-                </button>
+                <span className={`px-4 py-2 rounded-full text-sm font-semibold ${
+                  selectedHistorySession.status === 'completed' ? 'bg-green-100 text-green-700' :
+                  selectedHistorySession.status === 'running' ? 'bg-blue-100 text-blue-700' :
+                  selectedHistorySession.status === 'failed' ? 'bg-red-100 text-red-700' :
+                  'bg-gray-100 text-gray-700'
+                }`}>
+                  {selectedHistorySession.status.charAt(0).toUpperCase() + selectedHistorySession.status.slice(1)}
+                </span>
               </div>
 
-              <div className="p-6 overflow-y-auto max-h-[calc(90vh-180px)]">
-                <div className="grid grid-cols-4 gap-4 mb-6">
-                  <div className="bg-blue-50 rounded-lg p-4 border border-blue-100">
-                    <div className="text-xs font-medium text-blue-600 uppercase tracking-wide mb-1">Total</div>
-                    <div className="text-3xl font-bold text-blue-700">{csvImportProgress.total}</div>
-                  </div>
-                  <div className="bg-green-50 rounded-lg p-4 border border-green-100">
-                    <div className="text-xs font-medium text-green-600 uppercase tracking-wide mb-1">Imported</div>
-                    <div className="text-3xl font-bold text-green-700">{csvImportProgress.imported}</div>
-                  </div>
-                  <div className="bg-yellow-50 rounded-lg p-4 border border-yellow-100">
-                    <div className="text-xs font-medium text-yellow-600 uppercase tracking-wide mb-1">Updated</div>
-                    <div className="text-3xl font-bold text-yellow-700">{csvImportProgress.updated}</div>
-                  </div>
-                  <div className="bg-red-50 rounded-lg p-4 border border-red-100">
-                    <div className="text-xs font-medium text-red-600 uppercase tracking-wide mb-1">Failed</div>
-                    <div className="text-3xl font-bold text-red-700">{csvImportProgress.failed}</div>
-                  </div>
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+                <div className="bg-white rounded-lg p-3 border border-indigo-200">
+                  <div className="text-xs text-gray-600 mb-1">Total</div>
+                  <div className="text-2xl font-bold text-gray-900">{selectedHistorySession.progress.total}</div>
                 </div>
-
-                <div className="mb-6">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-sm font-medium text-gray-700">Overall Progress</span>
-                    <span className="text-sm font-semibold text-gray-900">{csvImportProgress.percentage}%</span>
-                  </div>
-                  <div className="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
-                    <div 
-                      className="bg-blue-600 h-2 rounded-full transition-all duration-500"
-                      style={{ width: `${csvImportProgress.percentage}%` }}
-                    ></div>
-                  </div>
-                  <div className="flex items-center justify-between mt-2 text-xs text-gray-500">
-                    <span>{csvImportProgress.processed} of {csvImportProgress.total} processed</span>
-                    <span>Batch {Math.ceil(csvImportProgress.processed / 5)}/{Math.ceil(csvImportProgress.total / 5)}</span>
-                  </div>
+                <div className="bg-white rounded-lg p-3 border border-green-200">
+                  <div className="text-xs text-gray-600 mb-1">Imported</div>
+                  <div className="text-2xl font-bold text-green-600">{selectedHistorySession.progress.imported}</div>
                 </div>
+                <div className="bg-white rounded-lg p-3 border border-yellow-200">
+                  <div className="text-xs text-gray-600 mb-1">Skipped</div>
+                  <div className="text-2xl font-bold text-yellow-600">{selectedHistorySession.progress.updated}</div>
+                </div>
+                <div className="bg-white rounded-lg p-3 border border-red-200">
+                  <div className="text-xs text-gray-600 mb-1">Failed</div>
+                  <div className="text-2xl font-bold text-red-600">{selectedHistorySession.progress.failed}</div>
+                </div>
+                <div className="bg-white rounded-lg p-3 border border-purple-200">
+                  <div className="text-xs text-gray-600 mb-1">Progress</div>
+                  <div className="text-2xl font-bold text-purple-600">{selectedHistorySession.progress.percentage}%</div>
+                </div>
+              </div>
+            </div>
 
-                <div className="border border-gray-200 rounded-lg overflow-hidden">
-                  <div className="bg-gray-50 px-4 py-3 border-b border-gray-200 flex items-center justify-between">
-                    <h4 className="text-sm font-semibold text-gray-900">Real-time Activity</h4>
-                    <div className="flex items-center gap-2">
-                      <span className="relative flex h-2 w-2">
-                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
-                        <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
-                      </span>
-                      <span className="text-xs text-green-600 font-medium">Live</span>
-                    </div>
-                  </div>
-                  
-                  <div className="bg-white max-h-96 overflow-y-auto">
-                    {csvImportDetails.length > 0 ? (
-                      <div className="divide-y divide-gray-100">
-                        {csvImportDetails.slice(0, 50).map((detail, idx) => (
-                          <div 
-                            key={idx} 
-                            className={`px-4 py-3 flex items-center justify-between hover:bg-gray-50 transition-colors ${
-                              detail.status === 'success' ? 'border-l-2 border-green-500 bg-green-50/30' :
-                              detail.status === 'error' ? 'border-l-2 border-red-500 bg-red-50/30' :
-                              'border-l-2 border-blue-500 bg-blue-50/30'
-                            }`}
-                          >
-                            <div className="flex items-center gap-3 flex-1 min-w-0">
-                              <div className="flex-shrink-0">
-                                {detail.status === 'success' && (
-                                  <svg className="w-5 h-5 text-green-600" fill="currentColor" viewBox="0 0 20 20">
-                                    <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
-                                  </svg>
-                                )}
-                                {detail.status === 'error' && (
-                                  <svg className="w-5 h-5 text-red-600" fill="currentColor" viewBox="0 0 20 20">
-                                    <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
-                                  </svg>
-                                )}
-                                {detail.status === 'processing' && (
-                                  <svg className="w-5 h-5 text-blue-600 animate-spin" fill="none" viewBox="0 0 24 24">
-                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                                  </svg>
-                                )}
-                              </div>
-                              <div className="min-w-0 flex-1">
-                                <div className="flex items-center gap-2">
-                                  <span className="text-sm font-mono font-semibold text-gray-900">{detail.asin}</span>
-                                  <span className="text-gray-400">•</span>
-                                  <span className="text-sm text-gray-600 truncate">{detail.message}</span>
-                                </div>
-                              </div>
-                            </div>
-                            <div className="flex-shrink-0 ml-4">
-                              <span className="text-xs text-gray-400">
-                                {new Date(detail.timestamp).toLocaleTimeString()}
-                              </span>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="py-16 px-4 text-center">
-                        <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-blue-50 mb-4">
-                          <svg className="w-8 h-8 text-blue-600 animate-spin" fill="none" viewBox="0 0 24 24">
-                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                          </svg>
+            {/* Logs */}
+            <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
+              <div className="bg-gray-800 px-4 py-3">
+                <h5 className="text-sm font-semibold text-white">Activity Logs ({selectedHistorySession.logs?.length || 0})</h5>
+              </div>
+              <div className="max-h-96 overflow-y-auto divide-y divide-gray-100">
+                {selectedHistorySession.logs && selectedHistorySession.logs.length > 0 ? (
+                  selectedHistorySession.logs.map((log, idx) => (
+                    <div key={idx} className="px-4 py-3 hover:bg-gray-50">
+                      <div className="flex items-center justify-between gap-4">
+                        <div className="flex items-center gap-3 flex-1">
+                          <span className={`w-2 h-2 rounded-full ${
+                            log.status === 'success' ? 'bg-green-500' :
+                            log.status === 'error' ? 'bg-red-500' :
+                            log.status === 'skipped' ? 'bg-yellow-500' :
+                            'bg-blue-500'
+                          }`}></span>
+                          <span className="font-mono text-sm font-semibold text-gray-900">{log.asin}</span>
+                          <span className={`px-2 py-0.5 text-xs font-medium rounded ${
+                            log.status === 'success' ? 'bg-green-100 text-green-700' :
+                            log.status === 'error' ? 'bg-red-100 text-red-700' :
+                            log.status === 'skipped' ? 'bg-yellow-100 text-yellow-700' :
+                            'bg-blue-100 text-blue-700'
+                          }`}>
+                            {log.status}
+                          </span>
                         </div>
-                        <p className="text-sm font-medium text-gray-900 mb-1">Processing imports...</p>
-                        <p className="text-xs text-gray-500">
-                          Scraping Amazon AU products • Batch {Math.ceil(csvImportProgress.processed / 5)}/{Math.ceil(csvImportProgress.total / 5)}
-                        </p>
+                        <span className="text-xs text-gray-500 whitespace-nowrap">
+                          {new Date(log.timestamp).toLocaleTimeString()}
+                        </span>
                       </div>
-                    )}
+                      <p className="text-sm text-gray-600 mt-1 ml-5">{log.message}</p>
+                    </div>
+                  ))
+                ) : (
+                  <div className="py-12 text-center text-gray-500">
+                    <p>No logs available</p>
                   </div>
-                </div>
-              </div>
-
-              <div className="px-6 py-4 bg-gray-50 border-t border-gray-200 flex justify-between items-center">
-                {(csvImportStatus === 'processing' || csvImportStatus === 'running') && (
-                  <button 
-                    onClick={handleCancelImport}
-                    className="px-4 py-2 text-sm font-medium text-white bg-red-600 rounded hover:bg-red-700"
-                  >
-                    Cancel Import
-                  </button>
                 )}
-                {csvImportStatus === 'cancelled' && (
-                  <span className="text-sm text-gray-600">Import cancelled</span>
-                )}
-                {(csvImportStatus === 'idle' || csvImportStatus === 'completed') && (
-                  <span></span>
-                )}
-                <button 
-                  onClick={() => setShowImportModal(false)}
-                  className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded hover:bg-gray-50 ml-auto"
-                >
-                  Close
-                </button>
               </div>
             </div>
           </div>
+        ) : (
+          // History List View
+          <div>
+            {importHistory.length === 0 ? (
+              <div className="text-center py-16">
+                <svg className="mx-auto h-16 w-16 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+                <h3 className="mt-4 text-lg font-medium text-gray-900">No import history</h3>
+                <p className="mt-2 text-sm text-gray-500">Start your first CSV import to see history here</p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {importHistory.map((historySession) => {
+                  const duration = historySession.completed_at 
+                    ? Math.round((new Date(historySession.completed_at) - new Date(historySession.started_at)) / 1000)
+                    : null
+
+                  return (
+                    <div
+                      key={historySession.id}
+                      className="bg-gradient-to-r from-white to-gray-50 rounded-lg border border-gray-200 p-4 hover:shadow-md transition-shadow cursor-pointer"
+                      onClick={() => viewSessionDetails(historySession.id)}
+                    >
+                      <div className="flex items-center justify-between">
+                        <div className="flex-1">
+                          <div className="flex items-center gap-3 mb-2">
+                            <h4 className="font-semibold text-gray-900">
+                              Session #{historySession.id?.toString().slice(-8)}
+                            </h4>
+                            <span className={`px-3 py-1 rounded-full text-xs font-semibold ${
+                              historySession.status === 'completed' ? 'bg-green-100 text-green-700' :
+                              historySession.status === 'running' ? 'bg-blue-100 text-blue-700 animate-pulse' :
+                              historySession.status === 'failed' ? 'bg-red-100 text-red-700' :
+                              'bg-gray-100 text-gray-700'
+                            }`}>
+                              {historySession.status.charAt(0).toUpperCase() + historySession.status.slice(1)}
+                            </span>
+                          </div>
+
+                          <div className="flex items-center gap-6 text-sm text-gray-600">
+                            <div className="flex items-center gap-1">
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                              </svg>
+                              {new Date(historySession.started_at).toLocaleDateString()} at {new Date(historySession.started_at).toLocaleTimeString()}
+                            </div>
+                            {duration !== null && (
+                              <div className="flex items-center gap-1">
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                                </svg>
+                                {duration}s
+                              </div>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-4 text-sm">
+                          <div className="text-center">
+                            <div className="text-xs text-gray-500">Total</div>
+                            <div className="text-lg font-bold text-gray-900">{historySession.total_skus}</div>
+                          </div>
+                          <div className="text-center">
+                            <div className="text-xs text-gray-500">Imported</div>
+                            <div className="text-lg font-bold text-green-600">{historySession.imported_products || 0}</div>
+                          </div>
+                          <div className="text-center">
+                            <div className="text-xs text-gray-500">Skipped</div>
+                            <div className="text-lg font-bold text-yellow-600">{historySession.updated_products || 0}</div>
+                          </div>
+                          <div className="text-center">
+                            <div className="text-xs text-gray-500">Failed</div>
+                            <div className="text-lg font-bold text-red-600">{historySession.failed_skus || 0}</div>
+                          </div>
+                          <svg className="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                          </svg>
+                        </div>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
         )}
+      </div>
+
+      {/* Footer */}
+      <div className="px-6 py-4 bg-gray-50 border-t border-gray-200 flex justify-between items-center">
+        <span className="text-sm text-gray-600">
+          {importHistory.length} session{importHistory.length !== 1 ? 's' : ''} found
+        </span>
+        <button
+          onClick={() => {
+            setShowImportHistory(false)
+            setSelectedHistorySession(null)
+          }}
+          className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded hover:bg-gray-50"
+        >
+          Close
+        </button>
+      </div>
+    </div>
+  </div>
+)}
+        {/* Import Details Modal */}
+{showImportModal && (
+  <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+    <div className="bg-white rounded-lg shadow-xl max-w-6xl w-full max-h-[90vh] overflow-hidden">
+      {/* Header */}
+      <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between bg-gradient-to-r from-blue-600 to-indigo-600">
+        <div className="text-white">
+          <h3 className="text-lg font-semibold">CSV Import Progress</h3>
+          <p className="text-sm text-blue-100 mt-0.5">
+            Session #{currentCsvSession?.toString().slice(-8)} • Live Activity Feed
+          </p>
+        </div>
+        <button 
+          onClick={() => setShowImportModal(false)}
+          className="text-white/80 hover:text-white transition-colors"
+        >
+          <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+      </div>
+
+      <div className="p-6 overflow-y-auto max-h-[calc(90vh-180px)] bg-gray-50">
+        {/* Real-time Progress Stats */}
+        <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
+          {/* Total */}
+          <div className="bg-gradient-to-br from-blue-500 to-blue-600 rounded-lg p-4 text-white shadow-lg">
+            <div className="flex items-center justify-between mb-2">
+              <div className="text-xs font-semibold uppercase tracking-wide opacity-90">Total</div>
+              <svg className="w-5 h-5 opacity-75" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+              </svg>
+            </div>
+            <div className="text-3xl font-bold">{csvImportProgress.total}</div>
+            <div className="text-xs mt-1 opacity-90">Products in queue</div>
+          </div>
+          
+          {/* Imported */}
+          <div className="bg-gradient-to-br from-green-500 to-green-600 rounded-lg p-4 text-white shadow-lg relative overflow-hidden">
+            {csvImportProgress.imported > 0 && (
+              <div className="absolute inset-0 bg-white/20 animate-pulse-fast"></div>
+            )}
+            <div className="relative z-10">
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-xs font-semibold uppercase tracking-wide opacity-90">Imported</div>
+                <svg className="w-5 h-5 opacity-75" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+              </div>
+              <div className="text-3xl font-bold">{csvImportProgress.imported}</div>
+              <div className="text-xs mt-1 opacity-90">Successfully added</div>
+            </div>
+          </div>
+          
+          {/* Skipped */}
+          <div className="bg-gradient-to-br from-yellow-500 to-yellow-600 rounded-lg p-4 text-white shadow-lg relative overflow-hidden">
+            {csvImportProgress.updated > 0 && (
+              <div className="absolute inset-0 bg-white/20 animate-pulse-fast"></div>
+            )}
+            <div className="relative z-10">
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-xs font-semibold uppercase tracking-wide opacity-90">Skipped</div>
+                <svg className="w-5 h-5 opacity-75" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 5l7 7-7 7M5 5l7 7-7 7" />
+                </svg>
+              </div>
+              <div className="text-3xl font-bold">{csvImportProgress.updated}</div>
+              <div className="text-xs mt-1 opacity-90">Already existed</div>
+            </div>
+          </div>
+          
+          {/* Failed */}
+          <div className="bg-gradient-to-br from-red-500 to-red-600 rounded-lg p-4 text-white shadow-lg relative overflow-hidden">
+            {csvImportProgress.failed > 0 && (
+              <div className="absolute inset-0 bg-white/20 animate-pulse-fast"></div>
+            )}
+            <div className="relative z-10">
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-xs font-semibold uppercase tracking-wide opacity-90">Failed</div>
+                <svg className="w-5 h-5 opacity-75" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+              </div>
+              <div className="text-3xl font-bold">{csvImportProgress.failed}</div>
+              <div className="text-xs mt-1 opacity-90">Errors occurred</div>
+            </div>
+          </div>
+
+          {/* Processing */}
+          <div className="bg-gradient-to-br from-purple-500 to-purple-600 rounded-lg p-4 text-white shadow-lg relative overflow-hidden">
+            {csvImportStatus === 'processing' && (
+              <div className="absolute inset-0 bg-white/20 animate-pulse"></div>
+            )}
+            <div className="relative z-10">
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-xs font-semibold uppercase tracking-wide opacity-90">Processing</div>
+                {csvImportStatus === 'processing' && (
+                  <svg className="w-5 h-5 opacity-75 animate-spin" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                  </svg>
+                )}
+              </div>
+              <div className="text-3xl font-bold">{csvImportProgress.processed}</div>
+              <div className="text-xs mt-1 opacity-90">Currently processing</div>
+            </div>
+          </div>
+        </div>
+
+        {/* Progress Bar */}
+        <div className="mb-6 bg-white rounded-lg p-4 shadow border border-gray-200">
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <span className="text-sm font-semibold text-gray-900">Overall Progress</span>
+              <p className="text-xs text-gray-500 mt-0.5">
+                Processing batch {Math.ceil(csvImportProgress.processed / 5)}/{Math.ceil(csvImportProgress.total / 5)}
+              </p>
+            </div>
+            <div className="text-right">
+              <span className="text-2xl font-bold text-blue-600">{csvImportProgress.percentage}%</span>
+              <p className="text-xs text-gray-500 mt-0.5">
+                {csvImportProgress.processed}/{csvImportProgress.total} processed
+              </p>
+            </div>
+          </div>
+          <div className="relative">
+            <div className="w-full bg-gray-200 rounded-full h-3 overflow-hidden">
+              <div 
+                className="bg-gradient-to-r from-blue-500 to-indigo-600 h-3 rounded-full transition-all duration-500 relative overflow-hidden"
+                style={{ width: `${csvImportProgress.percentage}%` }}
+              >
+                <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/30 to-transparent animate-shimmer"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Clickable Live Activity Log */}
+        <div className="bg-white rounded-lg shadow border border-gray-200 overflow-hidden">
+          <div className="bg-gradient-to-r from-gray-800 to-gray-900 px-4 py-3 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <h4 className="text-sm font-bold text-white">Live Activity Log</h4>
+              <div className="flex items-center gap-2 px-2 py-1 bg-green-500/20 rounded-full border border-green-400/30">
+                <span className="relative flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
+                </span>
+                <span className="text-xs text-green-300 font-semibold">LIVE</span>
+              </div>
+            </div>
+            <div className="text-xs text-gray-400">
+              {csvImportDetails.length} activities
+            </div>
+          </div>
+          
+          <div className="max-h-[500px] overflow-y-auto bg-gray-900">
+            {csvImportDetails.length > 0 ? (
+              <div className="divide-y divide-gray-800">
+                {csvImportDetails.slice(0, 100).map((detail, idx) => {
+                  const isLatest = idx === 0
+                  const isExpanded = expandedLog === idx
+                  
+                  const statusConfig = {
+                    success: { 
+                      bg: 'bg-green-500/10 hover:bg-green-500/20', 
+                      border: 'border-l-4 border-green-500',
+                      icon: (
+                        <svg className="w-5 h-5 text-green-400" fill="currentColor" viewBox="0 0 20 20">
+                          <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                        </svg>
+                      ),
+                      textColor: 'text-green-300',
+                      badge: 'bg-green-500/20 text-green-300 border-green-500/30'
+                    },
+                    error: { 
+                      bg: 'bg-red-500/10 hover:bg-red-500/20', 
+                      border: 'border-l-4 border-red-500',
+                      icon: (
+                        <svg className="w-5 h-5 text-red-400" fill="currentColor" viewBox="0 0 20 20">
+                          <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                        </svg>
+                      ),
+                      textColor: 'text-red-300',
+                      badge: 'bg-red-500/20 text-red-300 border-red-500/30'
+                    },
+                    processing: { 
+                      bg: 'bg-blue-500/10 hover:bg-blue-500/20', 
+                      border: 'border-l-4 border-blue-500',
+                      icon: (
+                        <svg className="w-5 h-5 text-blue-400 animate-spin" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                      ),
+                      textColor: 'text-blue-300',
+                      badge: 'bg-blue-500/20 text-blue-300 border-blue-500/30'
+                    },
+                    skipped: { 
+                      bg: 'bg-yellow-500/10 hover:bg-yellow-500/20', 
+                      border: 'border-l-4 border-yellow-500',
+                      icon: (
+                        <svg className="w-5 h-5 text-yellow-400" fill="currentColor" viewBox="0 0 20 20">
+                          <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM7 9a1 1 0 000 2h6a1 1 0 100-2H7z" clipRule="evenodd" />
+                        </svg>
+                      ),
+                      textColor: 'text-yellow-300',
+                      badge: 'bg-yellow-500/20 text-yellow-300 border-yellow-500/30'
+                    }
+                  }
+
+                  const config = statusConfig[detail.status] || statusConfig.processing
+
+                  return (
+                    <div 
+                      key={`${detail.asin}-${idx}-${detail.timestamp}`}
+                      className={`transition-all duration-300 ${config.bg} ${config.border} ${
+                        isLatest ? 'animate-pulse-once' : ''
+                      } ${isExpanded ? 'bg-gray-800' : ''}`}
+                    >
+                      {/* Clickable Log Entry */}
+                      <div 
+                        className="px-4 py-3 flex items-start gap-4 cursor-pointer"
+                        onClick={() => setExpandedLog(isExpanded ? null : idx)}
+                      >
+                        <div className="flex-shrink-0 mt-0.5">
+                          {config.icon}
+                        </div>
+                        
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 mb-1 flex-wrap">
+                            <span className="text-sm font-mono font-bold text-white">
+                              {detail.asin}
+                            </span>
+                            <span className={`px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider rounded-full border ${config.badge}`}>
+                              {detail.status}
+                            </span>
+                            {isLatest && (
+                              <span className="px-2 py-0.5 text-[10px] font-semibold uppercase bg-yellow-500/20 text-yellow-300 border border-yellow-500/30 rounded-full animate-pulse">
+                                NEW
+                              </span>
+                            )}
+                            <svg 
+                              className={`w-4 h-4 text-gray-400 transition-transform ml-auto ${isExpanded ? 'rotate-180' : ''}`} 
+                              fill="none" 
+                              stroke="currentColor" 
+                              viewBox="0 0 24 24"
+                            >
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                            </svg>
+                          </div>
+                          <p className={`text-sm ${config.textColor} leading-relaxed`}>
+                            {detail.message}
+                          </p>
+                        </div>
+                        
+                        <div className="flex-shrink-0 text-right">
+                          <span className="text-xs text-gray-500 font-mono">
+                            {new Date(detail.timestamp).toLocaleTimeString()}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Expandable Details */}
+                      {isExpanded && detail.details && (
+                        <div className="px-4 pb-4 ml-9 border-t border-gray-700 pt-3 mt-2">
+                          <div className="bg-gray-800/50 rounded-lg p-3 border border-gray-700">
+                            <h5 className="text-xs font-semibold text-gray-400 uppercase mb-2">Import Details</h5>
+                            <pre className="text-xs text-gray-300 overflow-x-auto whitespace-pre-wrap">
+                              {JSON.stringify(detail.details, null, 2)}
+                            </pre>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            ) : (
+              <div className="py-20 px-4 text-center">
+                <div className="inline-flex items-center justify-center w-20 h-20 rounded-full bg-blue-500/20 mb-4">
+                  <svg className="w-10 h-10 text-blue-400 animate-spin" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                  </svg>
+                </div>
+                <p className="text-base font-semibold text-white mb-2">Initializing import session...</p>
+                <p className="text-sm text-gray-400">
+                  Connecting to Amazon AU • Preparing scrapers • Starting batch processing
+                </p>
+                <div className="mt-6 flex items-center justify-center gap-2">
+                  <div className="w-2 h-2 bg-blue-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
+                  <div className="w-2 h-2 bg-blue-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
+                  <div className="w-2 h-2 bg-blue-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Modal Footer */}
+      <div className="px-6 py-4 bg-gray-50 border-t border-gray-200 flex justify-between items-center">
+        {(csvImportStatus === 'processing' || csvImportStatus === 'running') && (
+          <button 
+            onClick={handleCancelImport}
+            className="px-5 py-2.5 text-sm font-semibold text-white bg-gradient-to-r from-red-600 to-red-700 rounded-lg hover:from-red-700 hover:to-red-800 shadow-lg hover:shadow-xl transition-all duration-200 flex items-center gap-2"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+            Cancel Import
+          </button>
+        )}
+        {csvImportStatus === 'cancelled' && (
+          <span className="text-sm text-gray-600 font-medium">✗ Import cancelled</span>
+        )}
+        {(csvImportStatus === 'idle' || csvImportStatus === 'completed') && (
+          <span></span>
+        )}
+        <button 
+          onClick={() => setShowImportModal(false)}
+          className="px-5 py-2.5 text-sm font-semibold text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 shadow hover:shadow-md transition-all duration-200 ml-auto"
+        >
+          Close
+        </button>
+      </div>
+    </div>
+  </div>
+)}
+
+{/* Add these animations to your global styles or in a <style jsx> tag */}
+<style jsx>{`
+  @keyframes shimmer {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(100%); }
+  }
+  
+  @keyframes pulse-once {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+  }
+
+  @keyframes pulse-fast {
+    0%, 100% { opacity: 0.2; }
+    50% { opacity: 0.4; }
+  }
+  
+  .animate-shimmer {
+    animation: shimmer 2s infinite;
+  }
+  
+  .animate-pulse-once {
+    animation: pulse-once 1s ease-in-out;
+  }
+
+  .animate-pulse-fast {
+    animation: pulse-fast 0.8s ease-in-out infinite;
+  }
+`}</style>
 
         {/* Delete Confirmation Modal */}
         {showDeleteConfirm && (
