@@ -173,7 +173,7 @@ export default function EmegaDatabasePage() {
           setSelectedTable('emega_tracking')
           
           if (data.count === 0) {
-            setError(`No results found for "${trackingSearchTerm}". Try searching with a different ID or tracking number.`)
+            setError(`No results found for &quot;${trackingSearchTerm}&quot;. Try searching with a different ID or tracking number.`)
           }
         } else {
           setError('Search failed. Please try again.')
@@ -352,7 +352,7 @@ export default function EmegaDatabasePage() {
             </div>
             {isTrackingSearch && totalRecords > 0 && (
               <p className="mt-3 text-sm text-blue-700">
-                Found <span className="font-semibold">{totalRecords}</span> result{totalRecords !== 1 ? 's' : ''} for: <span className="font-semibold">"{trackingSearchTerm}"</span>
+                Found <span className="font-semibold">{totalRecords}</span> result{totalRecords !== 1 ? 's' : ''} for: <span className="font-semibold">&quot;{trackingSearchTerm}&quot;</span>
               </p>
             )}
           </div>
